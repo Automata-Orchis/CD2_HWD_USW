@@ -1,6 +1,21 @@
 # Plan
 
-`D:\CapstoneDesign2\project_gamma`에서 이루어질 모든 작업에 대한 계획이 작성되어 있다. 이를 기반으로 모든 작업이 진행되며, 작업의 진행 상황에 따라 내용이 수정될 수 있다. 
+이 문서는 특정 프로젝트 진행을 위해 작성된 계획서다. 모든 작업은 이 문서를 기반으로 진행된다. 
+
+## 0. local과 server의 분리에 대하여
+
+**서버에서는 ai agent 사용이 불가하여, 불가피하게 local 환경에서 해당 파일들이 작성된다.**
+
+현 프로젝트는 Jupyter hub 상의 서버와 loacl 환경의 연결을 기반으로 한다. 
+
+서버에 대한 것은 아래와 같다. 
+- 대용량 모델인 VLM 파라미터, 이미지 및 라벨 등의 data, backend가 저장되어 있다. 
+- 서버의 사양은 RTX 4090, 24GiB이다. 
+- 서버에서는 ai agent 사용이 불가하여, 부득이하게 현 로컬 환경에 `server/` 폴더 하에 미러로 작성된다. 
+
+로컬에 대한 것은 아래와 같다. 
+- 현 로컬 환경에 대한 것은 `server/` 폴더와의 분리를 위해 `local/` 폴더 하에 작성된다. 
+- frontend나 환경 설정 등이 저장되며, 서버 상의 backend와 연결되어야 한다. 
 
 ## 1. 목표에 대하여
 
@@ -24,16 +39,16 @@ project_gamma/
 ├── PLAN.md                                    # 작업 계획 저장
 ├── LOG.md                                     # 작업 기록 저장
 ├── README.md                                  # 시스템의 사용법 등의 기초 정보
-├── config.yaml                                # 단일 제어 지점 (모델/임계값/모드/디바이스)
-├── requirements.txt                           # 시스템에서 요구되는 PyPI 패키지
-├── backend/                                   # 모델과 관련된 작업
-├── frontend/                                  # 사용자가 화면상으로 문서를 전달하고 그 결과를 확인
-├── model/                                     # 입력될 문서 이미지의 정보를 분석하는 모델
-└── data/                                      # 모델 평가에 사용할 데이터와 그 결과들을 저장
+├── local/									   # 로컬에서 작동할 모든 것
+│	└── frontend/
+└── server/									   # 서버에서 작동할 모든 것
+	├── model/								   # model 파라미터는 서버에 저장되어 있으며, 로컬 환경에는 없다.
+	│	└── Qwen3.5-9B/						   # Qwen3.5-9B에 대한 필요 파일들이 저장되어 있다. 
+	├── data/
+	└── backend/
 ```
 
 고려 사항은 다음과 같다. 
-- 시스템에서 사용될 모든 변수는 통합적으로 관리되어야 한다. 
 - 뼈대가 되는 시스템이 존재해야하며, 서로 다른 모델의 입출력은 그에 맞춰 적절히 변환되어야 한다. 
 - 시스템 관리를 위해 최대한 간결하게, 필요한 것만을 작성해야 한다. 
 
@@ -45,13 +60,13 @@ project_gamma/
 
 frontend의 구성 및 설명은 아래와 같다.
 ```
-  Model            Device          Upload Images or PDFs      Analysis and Stop Button
+	Model            Device          Upload Images or PDFs      Analysis and Stop Button
 ┌──────────────┐ ┌──────────────┐ ┌───────────────────────┐ ┌───────────────────────┐
 |              | |              | |                       | | ┌──────────┐ ┌──────┐ |
 | Select Model | | CPU □  GPU □ | | Select Images or PDFs | | | Analysis | | Stop | |
 |              | |              | |                       | | └──────────┘ └──────┘ |
 └──────────────┘ └──────────────┘ └───────────────────────┘ └───────────────────────┘
-  Image List           Image                Image Summary                                                 
+	Image List           Image                Image Summary                                                 
 ┌───────────────────┐ ┌────────────────┐  ┌─────────────────────────────────────────────────────────────┐
 | Image 1 - Done    │ |                |  │ Full Name: [Predicted Answer] [Accuracy]                    |
 | Image 2 - Working │ | Working Image  |  | Account No. (Bank Name): [Predicted Answer] [Accuracy]      |
@@ -63,7 +78,7 @@ frontend의 구성 및 설명은 아래와 같다.
 ┌──────────┐
 | Complete |
 └──────────┘
-  Preview
+	Preview
 ┌───────────────────────────────────────┐
 | Update Documet like Exel in real-time |
 └───────────────────────────────────────┘
@@ -74,20 +89,20 @@ frontend의 구성 및 설명은 아래와 같다.
 - "Device" : 분석 환경 (CPU or GPU) 설정
 - "Image Upload Button" : 둘 이상의 이미지 등록
 - "Analysis Button"
-    - Model, Device, Image Upload Button의 선택이 완료되면 활성화되며, 지정된 설정으로 작업이 실시 
-    - 작업이 진행 중이면 해당 버튼은 Stop Button으로 바뀐다.
+		- Model, Device, Image Upload Button의 선택이 완료되면 활성화되며, 지정된 설정으로 작업이 실시 
+		- 작업이 진행 중이면 해당 버튼은 Stop Button으로 바뀐다.
 - "Stop Button" : 진행중인 작업을 중지한다. 이후 Analysis Button으로 바뀐다. 
 
 작업이 진행될 경우 아래의 구성이 나타난다. 
 - "Image List" : 전달받은 이미지 목록과 함께 각 이미지의 상태가 뜬다. 
-    - 상태 : 작업 종료(Done), 작업 중(Working), 미작업(Blank)
-    - 이미지 목록을 클릭하면 해당 이미지의 작업 화면을 띄울 수 있다. 이미 진행된 작업의 경우 그 작업 기록이 뜬다.
+		- 상태 : 작업 종료(Done), 작업 중(Working), 미작업(Blank)
+		- 이미지 목록을 클릭하면 해당 이미지의 작업 화면을 띄울 수 있다. 이미 진행된 작업의 경우 그 작업 기록이 뜬다.
 - "Image" : 현재 선택된 이미지
 - "Image Summary" : 현재 선택된 이미지의 요약본. Predicted Answer의 수정이 가능. 
 - "Complete Button" : 현재 선택된 이미지의 작업이 완료되었을 때 누르는 확인 버튼. 
-    - 해당 버튼을 누르면 Image List에서 현재 이미지 상태가 Working에서 Done으로 바뀐 뒤, 다음 이미지로 넘어간다.
+		- 해당 버튼을 누르면 Image List에서 현재 이미지 상태가 Working에서 Done으로 바뀐 뒤, 다음 이미지로 넘어간다.
 - "Preview" : Done으로 처리된 이미지의 정보를 저장했을 때의 결과물을 실시간으로 보여주는 화면이다. 
-    - Exel과 같은 sheet 형태로 결과물을 저장한다고 가정한다.
+		- Exel과 같은 sheet 형태로 결과물을 저장한다고 가정한다.
 
 backend와의 연결은 다음과 같다.
 - `Image Upload Button` 클릭 시, 선택된 여러 개의 이미지 경로를 backend로 전달한다. 
