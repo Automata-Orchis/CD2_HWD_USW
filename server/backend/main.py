@@ -138,8 +138,28 @@ async def _run_job(job_id: str, req: AnalyzeRequest) -> None:
             _save_results(job_id, image_id, results)
             # working 상태 유지 — 사용자가 Complete 누르면 done으로 전환
         with db.connect() as cx:
-            final = JobStatus.stopped.value if _stop_flags.get(job_id) else JobStatus.completed.value
+            stopped = bool(_stop_flags.get(job_id))
+            final = JobStatus.stopped.value if stopped else JobStatus.completed.value
             cx.execute("UPDATE jobs SET status=? WHERE job_id=?", (final, job_id))
+            if stopped:
+                # 사용자가 Complete 하지 않은 이미지의 결과는 모두 폐기한다.
+                # Stop = 진행 중이던 작업의 추론 결과는 신뢰하지 않는다는 의미.
+                cx.execute(
+                    """DELETE FROM field_results
+                       WHERE job_id = ? AND image_id IN (
+                         SELECT ji.image_id FROM job_images ji
+                         JOIN images i ON ji.image_id = i.image_id
+                         WHERE ji.job_id = ? AND i.status != ?
+                       )""",
+                    (job_id, job_id, ImageStatus.done.value),
+                )
+                cx.execute(
+                    """UPDATE images SET status = ?
+                       WHERE image_id IN (
+                         SELECT ji.image_id FROM job_images WHERE job_id = ?
+                       ) AND status != ?""",
+                    (ImageStatus.blank.value, job_id, ImageStatus.done.value),
+                )
     finally:
         _running_tasks.pop(job_id, None)
         _stop_flags.pop(job_id, None)

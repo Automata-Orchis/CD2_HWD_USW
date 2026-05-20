@@ -55,8 +55,10 @@ https://<random>.trycloudflare.com
 
 ## 데이터 저장
 
-- 상태 DB : `server/data/state.db` (SQLite, 첫 기동 시 자동 생성)
-- 업로드 이미지 : `server/data/uploads/`
+`db.py` 는 backend 디렉토리의 **부모 옆에 `data/`** 를 만든다. 서버에서 backend가 `~/backend/` 라면 데이터는 `~/data/` 에 떨어진다.
+
+- 상태 DB : `<backend의 부모>/data/state.db` (SQLite, 첫 기동 시 자동 생성)
+- 업로드 이미지 : `<backend의 부모>/data/uploads/`
 
 ## 모델 추가
 

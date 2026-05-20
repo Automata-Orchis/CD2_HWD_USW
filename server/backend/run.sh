@@ -19,7 +19,7 @@ if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -qE "[:.]${PORT}[
     exit 1
 fi
 
-uvicorn main:app --host 127.0.0.1 --port "$PORT" &
+python -m uvicorn main:app --host 127.0.0.1 --port "$PORT" &
 UVICORN_PID=$!
 
 (

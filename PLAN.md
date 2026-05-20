@@ -33,19 +33,42 @@
 
 작업의 기본 구성은 다음과 같다
 ```
-project_gamma/
+CD2_HWD_USW/
+├── .gitattributes                # git 속성(라인엔딩 등)
 ├── .gitignore
-├── CLAUDE.md
-├── PLAN.md                                    # 작업 계획 저장
-├── LOG.md                                     # 작업 기록 저장
-├── README.md                                  # 시스템의 사용법 등의 기초 정보
-├── local/									   # 로컬에서 작동할 모든 것
-│	└── frontend/
-└── server/									   # 서버에서 작동할 모든 것
-	├── model/								   # model 파라미터는 서버에 저장되어 있으며, 로컬 환경에는 없다.
-	│	└── Qwen3.5-9B/						   # Qwen3.5-9B에 대한 필요 파일들이 저장되어 있다. 
-	├── data/
-	└── backend/
+├── CLAUDE.md                     # 코딩 행동 가이드
+├── PLAN.md                       # 작업 계획 저장 (이 문서)
+├── LOG.md                        # 작업 기록 저장
+├── README.md                     # 시스템의 사용법 등의 기초 정보
+├── SCHEMA.md                     # frontend ↔ backend ↔ model 데이터 스키마 정의
+├── TODO.md                       # 현재 검증 사항 및 개선 항목
+├── local/                        # 로컬에서 작동할 모든 것
+│   └── frontend/                 # Vite + React 앱 (§3 레이아웃 구현)
+│       ├── index.html
+│       ├── package.json
+│       ├── package-lock.json
+│       ├── vite.config.js
+│       ├── .env.example          # VITE_BACKEND_URL 템플릿 (.env 는 gitignore)
+│       ├── .gitignore
+│       ├── README.md
+│       └── src/
+│           ├── main.jsx          # 엔트리
+│           ├── App.jsx           # Toolbar/ImageList/ImageView/ImageSummary/Preview 통합
+│           ├── api.js            # backend 호출 래퍼 (SCHEMA.md 엔드포인트와 1:1)
+│           └── styles.css
+└── server/                       # 서버에서 작동할 모든 것
+    ├── model/                    # model 파라미터는 서버에 저장되어 있으며, 로컬 환경에는 없다.
+    │    └── Qwen3.5-9B/          # Qwen3.5-9B에 대한 필요 파일들이 저장되어 있다.
+    ├── data/                     # 업로드 이미지 + SQLite 상태 (런타임 생성, 서버 전용)
+    └── backend/                  # FastAPI 백엔드
+        ├── main.py               # FastAPI 앱 진입점 (라우터 정의)
+        ├── db.py                 # SQLite 초기화 및 상태 저장
+        ├── schemas.py            # Pydantic 모델/Enum 정의
+        ├── model_registry.py     # 모델 어댑터 레지스트리 (predict 인터페이스)
+        ├── requirements.txt
+        ├── bootstrap.sh          # 세션 1회 셋업 (멱등): pip --user, cloudflared 다운로드
+        ├── run.sh                # uvicorn + cloudflared 무한 재시도 루프
+        └── README.md
 ```
 
 고려 사항은 다음과 같다. 

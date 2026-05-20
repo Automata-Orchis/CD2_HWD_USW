@@ -3,10 +3,26 @@
 VLM 기반 한글 손글씨 문서 인식 시연 시스템.
 설계 문서는 `PLAN.md`, 통신 계약은 `SCHEMA.md`, 작업 기록은 `LOG.md` 참고.
 
+레포 트리(로컬 작업용):
+
 ```
 project_gamma/
-├── local/frontend/      # 로컬 UI (Vite + React)
-└── server/backend/      # Jupyter Hub 서버 backend (FastAPI + cloudflared)
+├── local/
+│   └── frontend/                 # 로컬 UI (Vite + React)
+└── server/                       # JupyterHub 서버 측의 미러 (prefix는 로컬 분리용)
+    ├── model/                    # VLM 파라미터 (예: Qwen3.5-9B) — 실제 파일은 서버에만 존재
+    ├── data/                     # SQLite + 업로드 이미지 (backend 첫 기동 시 자동 생성)
+    └── backend/                  # FastAPI + cloudflared
+```
+
+서버 배치(JupyterHub 홈, 영속): `server/` 폴더 자체는 로컬 분리용이므로 서버에는 존재하지 않는다. 그 **내용물**을 홈 직하에 둔다.
+
+```
+~/
+├── backend/                      # 로컬의 server/backend/ 내용
+├── data/                         # backend 첫 기동 시 자동 생성
+└── model/
+    └── Qwen3.5-9B/               # VLM 파라미터
 ```
 
 ## 구동 절차
@@ -16,7 +32,7 @@ project_gamma/
 JupyterHub 환경은 ephemeral이다 — 세션 재시작 시 `pip install`로 설치한 패키지가 모두 사라진다. 단 홈 디렉토리는 영속이므로 cloudflared 바이너리는 최초 1회만 다운로드된다. **세션 시작마다 `bootstrap.sh` 를 1회 실행**한다.
 
 ```bash
-cd server/backend
+cd ~/backend
 bash bootstrap.sh            # 매 세션 1회: pip install --user + cloudflared 다운로드(최초 1회)
 bash run.sh                  # 기본 포트 8000, 변경은 PORT=9000 bash run.sh
 ```
@@ -27,7 +43,7 @@ bash run.sh                  # 기본 포트 8000, 변경은 PORT=9000 bash run.
 https://<random>.trycloudflare.com
 ```
 
-sudo / `/usr/local/bin` 등 시스템 경로는 사용하지 않는다. cloudflared 바이너리는 `server/backend/cloudflared` 로 받아 그 자리에서 실행한다.
+sudo / `/usr/local/bin` 등 시스템 경로는 사용하지 않는다. cloudflared 바이너리는 `~/backend/cloudflared` 로 받아 그 자리에서 실행한다.
 
 > cloudflared가 일시적으로 끊기면 자동 재시작되며, 이때 **새 URL이 발급**된다. backend 작업 자체는 끊기지 않으니, 새 URL이 출력되면 frontend `.env` 만 갱신해 재접속하면 된다.
 
@@ -36,7 +52,7 @@ sudo / `/usr/local/bin` 등 시스템 경로는 사용하지 않는다. cloudfla
 ```bash
 cd local/frontend
 npm install
-cp .env.example .env
+copy .env.example .env
 # .env 의 VITE_BACKEND_URL 을 위에서 복사한 trycloudflare URL 로 교체
 npm run dev                  # http://localhost:5173
 ```
@@ -51,12 +67,12 @@ npm run dev                  # http://localhost:5173
 
 ## 모델 추가
 
-`server/backend/model_registry.py` 의 `_REGISTRY` 에 `predict(image_path, field_spec) -> list[FieldResult]`
-시그니처의 함수를 등록하면 frontend/SCHEMA를 건드리지 않고 새 모델이 노출된다.
+레포에서는 `server/backend/model_registry.py` (서버에서는 `~/backend/model_registry.py`)의 `_REGISTRY` 에
+`predict(image_path, field_spec) -> list[FieldResult]` 시그니처의 함수를 등록하면 frontend/SCHEMA를 건드리지 않고 새 모델이 노출된다.
 
-## 상태 저장 위치
+## 상태 저장 위치 (서버 기준)
 
-- `server/data/state.db` — Job / 이미지 / 필드 결과 (SQLite)
-- `server/data/uploads/` — 업로드된 원본 이미지
+- `~/data/state.db` — Job / 이미지 / 필드 결과 (SQLite)
+- `~/data/uploads/` — 업로드된 원본 이미지
 
-두 디렉터리는 backend 첫 기동 시 자동 생성된다.
+`db.py` 는 `backend/` 의 부모 디렉토리 옆에 `data/` 를 만든다. backend 첫 기동 시 자동 생성된다.
