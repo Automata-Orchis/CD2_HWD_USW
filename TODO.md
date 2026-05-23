@@ -1,6 +1,12 @@
 현재 검증 사항
 - Stop 동작의 재검증
 - cloudflared 자동 재시작 검증
+- Qwen3.5-9B 어댑터 frontend 연동 — `/models` 응답에 `Qwen3.5-9B` 노출 확인, Model 드롭다운에서 선택 가능 여부
+- Qwen3.5-9B 첫 분석 요청의 적재 지연 (~161s + 추론 ~8s ≈ 3분) 동안 frontend 가 `working` 상태로 안정적으로 대기하는지 — 진행 표시 / 타임아웃 / 재요청 등 UI 거동 확인
+- Qwen3.5-9B 두 번째 이후 이미지의 처리 속도(~8s/장) 가 일관되는지 — 같은 backend 프로세스 내 캐시 재사용 확인
+- 추출 결과의 JSON 파싱 성공률 — 모델이 JSON 만 출력하도록 강제한 프롬프트가 실효 있는지, Image Summary 의 필드 채움 비율 관찰. 빈 칸 다수면 프롬프트 강화 또는 정규식 폴백 보강
+- Stop 도중 backend 종료 시 다음 기동에서 모델이 재적재 되는지 (Qwen3.5-9B 의 first-call cost 가 어떻게 표시되는지)
+- 단일 워커(`run.sh` 의 `--workers 1`) 가 실제 유지되는지 — 멀티 워커 시 OOM 위험
 
 미래 개선 사항
 - .env 파일에 직접 접근하여 cloudflared의 url을 갱신하는 과정이 매우 번거롭다. cloudflared가 끊겼을 경우 재시작된 cloudflared의 url을 쉽게 변경할 수 있는 방법을 제시하라.

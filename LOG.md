@@ -35,3 +35,16 @@
 - Image 확대 시 우하단 반투명 미니맵 — `.zoom-stage` 우하단에 이미지 종횡비 기반 ≤100px 박스, 내부 viewport 사각형의 위치/크기를 `fracW/H = min(1, stageDim/(imgDim*zoom))` 및 `c = 0.5 − pan/(imgDim*zoom)` 으로 계산. 줌 > 1 일 때만 표시, `pointer-events: none`.
 - `local/` 루트의 임시 산출물 4종(`chat_share.html`, `enqueue_0.txt`, `enqueue_decoded.txt`, `enqueue_main.txt`) 제거 — PLAN §6 본문 추출용 ChatGPT 공유 페이지 덤프, 본문 정리 완료로 보존 가치 소실.
 - PLAN.md §2 트리를 실제 구조에 맞춰 갱신 — 루트명 `project_gamma` → `CD2_HWD_USW`, `SCHEMA.md`/`TODO.md`/`.gitattributes` 추가, `local/frontend/` Vite+React 골격과 `server/backend/` 구현 파일들에 한 줄 설명 부여. `server/model·data/` 는 서버 전용 디렉토리로 트리에 유지.
+
+## 2026-05-22~24
+
+- `server/backend/verify_qwen.py` 작성 — Qwen3.5-9B GPU 적재 + 멀티모달 추론 단독 검증 (processor / bf16 적재 / chat template / generate 4단계 분리).
+- torchvision 0.19.1+cu121 로 ABI 정합 — stable transformers 4.57.6 적재 시 conda torchvision 0.18.0 ↔ user-site torch 2.4.1 의 `torchvision::nms` 누락 해결.
+- stable 4.57.6 의 `qwen3_5` model_type 미인식 확정 (4.57.x 가 `qwen3_vl` 로 rename) — HF 모델 카드가 "transformers main 필요" 명시.
+- `transformers @main` (5.8.0.dev0) 설치 → `ParallelStyle` NameError → torch 2.5.1+cu121 + torchvision 0.20.1+cu121 업그레이드 (`--timeout 600 --retries 5` 로 PyTorch CDN read timeout 우회), AutoConfig 통과.
+- 같은 dev 빌드에서 `CPUOffloadPolicy` ImportError (torch≥2.6 FSDP2 hard import) — driver 535.288.01 은 CUDA 12.4 wheel 미수용으로 torch 추가 업그레이드 차단, main 두더지 잡기 종료.
+- transformers v5.x stable tag 매핑 (curl HEAD) → v5.2.0 부터 `qwen3_5`, v5.9.0 까지 FSDP2 hard import 부재 → **`transformers @ v5.9.0` 핀** (`--force-reinstall --no-deps`), AutoConfig + AutoProcessor 통과.
+- 모델 weight 4 shard 손상 발견 (declared 19.3 GiB 대비 실제 1.18 GiB) — `huggingface_hub.snapshot_download(allow_patterns=['*.safetensors'])` + `hf_transfer` Rust 가속으로 재다운, 무결성 + 총합 일치 확인.
+- verify_qwen.py 실측 통과 — bf16 17.53 GiB / 32.5 tok/s / 한국어 손글씨(시편 23편) 인식.
+- `model_registry.py` 에 `_qwen_predict` 어댑터 작성 + `_REGISTRY` 에 `"Qwen3.5-9B"` 등록 — 모듈 전역 lazy 캐시 + JSON 강제 프롬프트 + 코드 펜스 제거 파서 + 단일 generate. 첫 호출 ~161s 적재, 이후 ~8s/이미지.
+- README.md 갱신 — "VLM 환경 준비" 섹션 신설 + "서버 환경" 라인을 최종 검증 환경(transformers 5.9.0 / torch 2.5.1+cu121 / torchvision 0.20.1+cu121 / hf_transfer 0.1.9 등) 으로 교체.
