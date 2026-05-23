@@ -29,11 +29,11 @@ project_gamma/
 
 ### 1) 서버 (Jupyter Hub 터미널)
 
-JupyterHub 환경은 ephemeral이다 — 세션 재시작 시 `pip install`로 설치한 패키지가 모두 사라진다. 단 홈 디렉토리는 영속이므로 cloudflared 바이너리는 최초 1회만 다운로드된다. **세션 시작마다 `bootstrap.sh` 를 1회 실행**한다.
+JupyterHub 환경은 ephemeral이다 — 세션 재시작 시 `pip install`로 설치한 패키지가 모두 사라진다. 단 홈 디렉토리는 NFS 영속이므로 cloudflared 바이너리와 Qwen3.5-9B 모델 weight 는 최초 1회만 다운로드된다. **세션 시작마다 `bootstrap.sh` 를 1회 실행**한다.
 
 ```bash
 cd ~/backend
-bash bootstrap.sh            # 매 세션 1회: pip install --user + cloudflared 다운로드(최초 1회)
+bash bootstrap.sh            # 매 세션 1회: pip install --user + transformers v5.9.0 git pin + cloudflared/모델 weight 자동 복원
 bash run.sh                  # 기본 포트 8000, 변경은 PORT=9000 bash run.sh
 ```
 
@@ -96,68 +96,52 @@ npm run dev                  # http://localhost:5173
 - `accuracy` 는 v1 에서 모두 `None` (logprob 기반 산출은 후속)
 - 단일 워커(`run.sh` 의 `--workers 1`) 가정. 멀티 워커 시 워커당 18 GiB VRAM 점유로 24 GiB 1장 초과
 
-## VLM 환경 준비 (세션 초기화 후)
+## VLM 환경 준비 (세션 초기화 후 자동 복원)
 
-JupyterHub 는 ephemeral — `pip install --user` 패키지와 모델 weight 파일 모두 세션 재시작 시 사라진다. 아래는 시행착오를 거쳐 **검증된 명령 시퀀스**. 매 세션 1회 실행.
+JupyterHub 는 ephemeral — `pip install --user` 패키지가 매 세션 사라진다. 그러나 `~/backend/bootstrap.sh` 1회 실행이 다음을 모두 처리해 영속 환경을 재구성한다.
 
-### 1) Python 패키지 설치
+| # | 항목 | 비용 (첫 세션 / 이후) |
+|---|---|---|
+| 1 | `requirements.txt` 의 PyPI 의존성 설치 (FastAPI + cu121 torch + ML stack) | ~1~2 분 / ~1~2 분 (pip 가 skip) |
+| 2 | `transformers @ v5.9.0` git tag 핀 설치 (`--no-deps`) | ~30 초 / skip (멱등 검사) |
+| 3 | cloudflared 바이너리 다운로드 | ~10 초 / skip (홈 영속) |
+| 4 | Qwen3.5-9B weight 다운로드 (`hf_transfer` 가속) | ~5~15 분 (≈18 GiB) / skip (홈 영속) |
+| 5 | `import torch, transformers` 성공 여부 fail-fast 검증 | 즉시 |
+
+홈 디렉토리는 NFS 영속이라 cloudflared 와 모델 weight 는 보통 첫 세션 이후 다시 받지 않는다 — pip 의존성 재설치만 매 세션 비용으로 든다.
+
+### 수동 재구성 (디버깅용)
+
+bootstrap.sh 가 어딘가에서 깨졌을 때 단계별로 분리해 추적. 정상 흐름에선 불필요.
 
 ```bash
-# torch + torchvision 페어 (cu121 wheel). driver 535.288.01 환경에서 검증
-python -m pip install --user --upgrade \
-  --timeout 600 --retries 5 \
-  torch==2.5.1 torchvision==0.20.1 \
-  --index-url https://download.pytorch.org/whl/cu121
+# (1) PyPI 의존성만 (requirements.txt 그대로)
+python -m pip install --user --timeout 600 --retries 5 -r requirements.txt
 
-# transformers v5.9.0 핀 — qwen3_5 model_type 보유 + FSDP2 hard import 회귀 없는 stable tag
+# (2) transformers v5.9.0 핀 — qwen3_5 model_type 보유 + FSDP2 hard import 회귀 없는 stable tag
 python -m pip install --user --force-reinstall --no-deps \
   --timeout 600 --retries 5 \
   "transformers @ git+https://github.com/huggingface/transformers.git@v5.9.0"
 
-# 모델 다운로드 가속용 (Rust 가속기). 없으면 다운로드만 느려질 뿐 동작은 함
-python -m pip install --user --upgrade hf_transfer
-```
-
-`--timeout 600 --retries 5` 는 PyTorch CDN 의 read timeout 우회용. `transformers` 는 `--no-deps` 로 torch/accelerate 등 다른 의존성 변동 방지.
-
-### 2) 모델 weight 다운로드 (~18 GiB)
-
-`~/model/Qwen3.5-9B/` 의 4개 `.safetensors` shard. `huggingface_hub 1.16.1` 에서 `huggingface-cli` 진입점이 깨져 있어 **Python API 직접 호출**.
-
-```bash
+# (3) 모델 weight 단독 재다운 (`huggingface-cli` 는 hub 1.16.1 에서 깨져 Python API 사용)
 HF_HUB_ENABLE_HF_TRANSFER=1 python -c "
 from huggingface_hub import snapshot_download
-snapshot_download(
-    repo_id='Qwen/Qwen3.5-9B',
-    allow_patterns=['*.safetensors'],
-    local_dir='/home/jovyan/model/Qwen3.5-9B',
-)
+snapshot_download(repo_id='Qwen/Qwen3.5-9B', local_dir='/home/jovyan/model/Qwen3.5-9B')
 "
-```
 
-`allow_patterns=['*.safetensors']` 로 weight 만 받는다. config / tokenizer / chat_template 등은 이미 폴더에 있다고 가정 (없으면 패턴 확장: `allow_patterns=['*.safetensors', '*.json', 'chat_template.jinja', 'merges.txt', 'vocab.json']`).
-
-### 3) 다운로드 무결성 검증
-
-```bash
+# (4) 다운로드 무결성 — 4 shard 모두 OK + 총합 ~19.3 GiB 면 정상
 python -c "
 from pathlib import Path
 from safetensors import safe_open
 total = 0
 for p in sorted((Path.home()/'model/Qwen3.5-9B').glob('*.safetensors')):
-    with safe_open(str(p), framework='pt', device='cpu') as f:
-        n = len(list(f.keys()))
+    with safe_open(str(p), framework='pt', device='cpu') as f: n = len(list(f.keys()))
     sz = p.stat().st_size; total += sz
     print(f'OK {p.name} tensors={n} size={sz:_}')
 print(f'total {total:_}  (expected ~19_306_216_416)')
 "
-```
 
-4 shard 모두 `OK` + 총합 약 19.3 GiB 일치하면 정상 (실제 합계 ~19,306,310,880 — 메타 헤더 오버헤드 ~94 KB).
-
-### 4) transformers 인식 확인
-
-```bash
+# (5) transformers 인식 확인 — config: Qwen3_5Config / model_type: qwen3_5 / processor: Qwen3VLProcessor
 python -c "
 from pathlib import Path
 import transformers; print('transformers:', transformers.__version__)
@@ -168,16 +152,6 @@ print('config:', type(cfg).__name__, '| model_type:', cfg.model_type)
 print('processor:', type(proc).__name__)
 "
 ```
-
-기대 출력:
-
-```
-transformers: 5.9.0
-config: Qwen3_5Config | model_type: qwen3_5
-processor: Qwen3VLProcessor
-```
-
-여기까지 통과하면 환경 구성 완료. 이후 `bootstrap.sh` / `run.sh` 로 backend 기동 + `verify_qwen.py` 로 실제 추론 검증 (아래 섹션).
 
 ## 검증 스크립트
 

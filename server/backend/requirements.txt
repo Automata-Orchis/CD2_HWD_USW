@@ -1,4 +1,20 @@
+# --- API server ---
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 python-multipart==0.0.9
 pydantic==2.9.2
+
+# --- PyTorch (cu121 wheels — driver 535.288.01 / CUDA 12.x 호환) ---
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121
+torchvision==0.20.1+cu121
+
+# --- ML stack (transformers 5.9.0 검증 환경에서 사용된 버전) ---
+accelerate==1.13.0
+Pillow==10.3.0
+safetensors==0.7.0
+tokenizers==0.22.2
+huggingface_hub==1.16.1
+hf_transfer==0.1.9
+
+# transformers 는 PyPI 가 아닌 git tag(v5.9.0) 핀이라 bootstrap.sh 에서 별도 처리.

@@ -48,3 +48,4 @@
 - verify_qwen.py 실측 통과 — bf16 17.53 GiB / 32.5 tok/s / 한국어 손글씨(시편 23편) 인식.
 - `model_registry.py` 에 `_qwen_predict` 어댑터 작성 + `_REGISTRY` 에 `"Qwen3.5-9B"` 등록 — 모듈 전역 lazy 캐시 + JSON 강제 프롬프트 + 코드 펜스 제거 파서 + 단일 generate. 첫 호출 ~161s 적재, 이후 ~8s/이미지.
 - README.md 갱신 — "VLM 환경 준비" 섹션 신설 + "서버 환경" 라인을 최종 검증 환경(transformers 5.9.0 / torch 2.5.1+cu121 / torchvision 0.20.1+cu121 / hf_transfer 0.1.9 등) 으로 교체.
+- 세션 영속화 자동화 — `requirements.txt` 에 cu121 torch wheel 핀 + ML stack 추가, `bootstrap.sh` 가 transformers `@v5.9.0` git pin (멱등 skip) + 모델 weight 부재 시 `snapshot_download` 까지 처리하도록 확장. 매 세션 `bash bootstrap.sh` 한 줄로 전 환경 복원 가능.
