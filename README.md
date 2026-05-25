@@ -225,3 +225,27 @@ python verify_qwen.py <image_path> [prompt]
 - `~/data/uploads/` — 업로드된 원본 이미지
 
 `db.py` 는 `backend/` 의 부모 디렉토리 옆에 `data/` 를 만든다. backend 첫 기동 시 자동 생성된다.
+
+### DB 조회
+
+JupyterHub 환경에는 `sqlite3` CLI 가 깔려 있지 않으므로 (도구 모음 중 `sqlite_analyzer` 만 존재), `bootstrap.sh` 가 `requirements.txt` 로 함께 설치하는 **`sqlite-utils`** 를 사용한다. 백엔드의 `import sqlite3` 는 Python 표준 라이브러리이므로 별도 설치 없이 정상 동작 — 본 도구는 사람이 직접 DB 를 들여다 볼 때만 쓴다.
+
+```bash
+# 테이블 목록
+python -m sqlite_utils tables ~/data/state.db
+
+# 이미지 전체 (표 출력)
+python -m sqlite_utils ~/data/state.db "SELECT image_id, filename, status FROM images" --table
+
+# 특정 이미지의 필드 결과
+python -m sqlite_utils ~/data/state.db \
+  "SELECT key, predicted, edited FROM field_results WHERE image_id='img_xxx'" --table
+
+# 시트(완료된 이미지만) — CSV 저장
+python -m sqlite_utils ~/data/state.db \
+  "SELECT i.filename, fr.key, COALESCE(fr.edited, fr.predicted) AS value
+     FROM field_results fr JOIN images i ON fr.image_id = i.image_id
+    WHERE i.status='done'" --csv > sheet.csv
+```
+
+`~/.local/bin` 이 PATH 에 있으면 `sqlite-utils ~/data/state.db ...` 형태로도 호출 가능. PATH 에 없으면 위처럼 `python -m sqlite_utils` 를 사용한다.

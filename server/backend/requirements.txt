@@ -19,3 +19,6 @@ huggingface_hub==1.16.1
 hf_transfer==0.1.9
 
 # transformers 는 PyPI 가 아닌 git tag(v5.9.0) 핀이라 bootstrap.sh 에서 별도 처리.
+
+# --- DB 조회용 CLI (sqlite3 binary 부재 환경 대응 — `python -m sqlite_utils` 로 호출) ---
+sqlite-utils==3.38

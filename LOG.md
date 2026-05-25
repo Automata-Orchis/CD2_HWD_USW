@@ -61,3 +61,5 @@
 - `requirements.txt` 에 `PyYAML 6.0.2` 추가.
 - Toolbar grid 재정의 — Form Type 추가로 자식이 5개가 되어 기존 `1fr 1fr 1fr auto` 4 트랙과 불일치하던 것을 `1fr auto 1fr 1fr auto` 로 교체. Device 는 컨텐츠 폭(`auto`), Model/Form Type/Upload 가 `1fr` 균등 분할.
 - Device 박스 내부 좌우 여백 비대칭 수정 — 브라우저 기본 `input[type=radio]` 마진(Chrome `좌5/우3`)을 `0` 으로 reset + `.device { justify-content: center }`.
+- DB 조회용 CLI 보강 — JupyterHub 환경에 `sqlite3` binary 가 부재(`sqlite_analyzer` 만 존재)함을 확인, `requirements.txt` 에 `sqlite-utils==3.38` 추가 + `README.md` "상태 저장 위치" 섹션에 `python -m sqlite_utils ~/data/state.db ...` 예시 4종(테이블 목록 / 이미지 조회 / 필드 결과 / done 시트 CSV) 신설. backend `db.py` 의 `import sqlite3` 는 Python 표준 라이브러리라 동작 영향 없음.
+- `TODO.md` 재편 — Form Template 채택으로 해결된 "현재 결정 사항" 섹션 삭제 후 "검증 대상" / "개선 대상" / "추후 개선 대상" 3-tier 로 재구성. "개선 대상" 에 DB 조회 GUI, 이미지 소스 전환(서버 사전 저장 + `server/data/<신청서종류>/` 분류), 작업 선택 UX(진행도/미완료/재수정), 로그인 + `worker` 컬럼, DB 컬럼 확장, 다중 페이지(PDF 8장) 신청서 단일 Image Summary 산출 등을 한 줄씩 추가.
