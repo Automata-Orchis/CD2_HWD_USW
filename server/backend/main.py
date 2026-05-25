@@ -17,10 +17,12 @@ from fastapi.responses import FileResponse, JSONResponse
 
 import db
 import model_registry
+import templates_io
 from schemas import (
     AnalyzeRequest,
     Device,
     EditRequest,
+    FewshotPair,
     FieldResult,
     FieldSpec,
     ImageInfo,
@@ -64,6 +66,11 @@ def list_devices() -> dict:
     return {"devices": [d.value for d in Device]}
 
 
+@app.get("/templates")
+def list_templates() -> dict:
+    return {"templates": [t.model_dump() for t in templates_io.list_templates()]}
+
+
 # ---------- 업로드 ----------
 
 @app.post("/upload")
@@ -101,11 +108,14 @@ def image_file(image_id: str):
 async def analyze(req: AnalyzeRequest) -> dict:
     if req.model not in model_registry.available_models():
         raise HTTPException(400, detail={"error": "unknown_model", "message": req.model})
+    template = templates_io.load_template(req.template_name)
+    if template is None:
+        raise HTTPException(400, detail={"error": "unknown_template", "message": req.template_name})
     job_id = f"job_{uuid.uuid4().hex[:10]}"
     with db.connect() as cx:
         cx.execute(
             "INSERT INTO jobs(job_id, model, device, status, field_spec) VALUES (?,?,?,?,?)",
-            (job_id, req.model, req.device.value, JobStatus.running.value, db.dump_field_spec(req.field_spec)),
+            (job_id, req.model, req.device.value, JobStatus.running.value, db.dump_field_spec(template.field_spec)),
         )
         for ord_, image_id in enumerate(req.image_ids):
             cx.execute(
@@ -114,14 +124,23 @@ async def analyze(req: AnalyzeRequest) -> dict:
             )
 
     _stop_flags[job_id] = False
-    _running_tasks[job_id] = asyncio.create_task(_run_job(job_id, req))
+    _running_tasks[job_id] = asyncio.create_task(
+        _run_job(job_id, req.model, req.image_ids, template.field_spec, template.fewshot)
+    )
     return {"job_id": job_id}
 
 
-async def _run_job(job_id: str, req: AnalyzeRequest) -> None:
+async def _run_job(
+    job_id: str,
+    model: str,
+    image_ids: list[str],
+    field_spec: list[FieldSpec],
+    fewshot: list[FewshotPair],
+) -> None:
     loop = asyncio.get_running_loop()
+    fewshot_dicts = [f.model_dump() for f in fewshot]
     try:
-        for image_id in req.image_ids:
+        for image_id in image_ids:
             if _stop_flags.get(job_id):
                 break
             _set_image_status(image_id, ImageStatus.working)
@@ -130,7 +149,7 @@ async def _run_job(job_id: str, req: AnalyzeRequest) -> None:
             if not row:
                 continue
             results: list[FieldResult] = await loop.run_in_executor(
-                None, model_registry.predict, req.model, Path(row["path"]), req.field_spec
+                None, model_registry.predict, model, Path(row["path"]), field_spec, fewshot_dicts
             )
             if _stop_flags.get(job_id):
                 _set_image_status(image_id, ImageStatus.blank)

@@ -1,6 +1,8 @@
 """모델 어댑터 레지스트리.
 
-각 모델은 `predict(image_path, field_spec) -> list[FieldResult]`를 구현하면 된다.
+각 모델은 `predict(image_path, field_spec, fewshot) -> list[FieldResult]`를 구현하면 된다.
+fewshot 은 [{"user": str, "assistant": str}, ...] 형태(이미지 없는 텍스트 페어)이며,
+사용하지 않는 모델은 인자만 받고 무시한다.
 """
 from __future__ import annotations
 
@@ -14,7 +16,11 @@ from typing import Callable
 from schemas import FieldResult, FieldSpec
 
 
-def _mock_predict(image_path: Path, field_spec: list[FieldSpec]) -> list[FieldResult]:
+def _mock_predict(
+    image_path: Path,
+    field_spec: list[FieldSpec],
+    fewshot: list[dict],
+) -> list[FieldResult]:
     time.sleep(0.6)  # 시연용 지연 — 진행 상태를 눈으로 보기 위함
     samples = {
         "text": ["홍길동", "김철수", "이영희", "박민수"],
@@ -49,11 +55,16 @@ def _qwen_get():
         import torch
         from transformers import AutoModelForImageTextToText, AutoProcessor
 
-        _qwen_processor = AutoProcessor.from_pretrained(str(_QWEN_MODEL_DIR))
+        # local_files_only=True — 폐쇄망/불안정 네트워크에서 HF Hub 메타 조회로
+        # from_pretrained 가 다운로드 재시도 루프에 빠지는 것을 차단.
+        _qwen_processor = AutoProcessor.from_pretrained(
+            str(_QWEN_MODEL_DIR), local_files_only=True
+        )
         _qwen_model = AutoModelForImageTextToText.from_pretrained(
             str(_QWEN_MODEL_DIR),
             dtype=torch.bfloat16,
             device_map="auto",
+            local_files_only=True,
         )
         _qwen_model.eval()
     return _qwen_processor, _qwen_model
@@ -96,13 +107,23 @@ def _qwen_parse(text: str, field_spec: list[FieldSpec]) -> dict[str, str | None]
     return out
 
 
-def _qwen_predict(image_path: Path, field_spec: list[FieldSpec]) -> list[FieldResult]:
+def _qwen_predict(
+    image_path: Path,
+    field_spec: list[FieldSpec],
+    fewshot: list[dict],
+) -> list[FieldResult]:
     import torch
     from PIL import Image
 
     processor, model = _qwen_get()
     image = Image.open(image_path).convert("RGB")
-    messages = [
+    # fewshot 은 이미지 없는 텍스트 user/assistant 페어. 실제 분석 대상 이미지 메시지 앞에
+    # 그대로 끼워 넣어 출력 형식을 시연한다 (verify_qwen.py 의 messages[1~4] 와 동일 구조).
+    messages: list[dict] = []
+    for pair in fewshot:
+        messages.append({"role": "user", "content": pair["user"]})
+        messages.append({"role": "assistant", "content": pair["assistant"]})
+    messages.append(
         {
             "role": "user",
             "content": [
@@ -110,8 +131,11 @@ def _qwen_predict(image_path: Path, field_spec: list[FieldSpec]) -> list[FieldRe
                 {"type": "text", "text": _qwen_build_prompt(field_spec)},
             ],
         }
-    ]
-    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    )
+    text = processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True,
+        enable_thinking=False,
+    )
     inputs = processor(text=[text], images=[image], return_tensors="pt", padding=True).to(model.device)
     with torch.inference_mode():
         out = model.generate(**inputs, max_new_tokens=512, do_sample=False)
@@ -124,7 +148,7 @@ def _qwen_predict(image_path: Path, field_spec: list[FieldSpec]) -> list[FieldRe
     ]
 
 
-_REGISTRY: dict[str, Callable[[Path, list[FieldSpec]], list[FieldResult]]] = {
+_REGISTRY: dict[str, Callable[[Path, list[FieldSpec], list[dict]], list[FieldResult]]] = {
     "Mock-Model": _mock_predict,
     "Qwen3.5-9B": _qwen_predict,
 }
@@ -134,7 +158,12 @@ def available_models() -> list[str]:
     return list(_REGISTRY.keys())
 
 
-def predict(model_name: str, image_path: Path, field_spec: list[FieldSpec]) -> list[FieldResult]:
+def predict(
+    model_name: str,
+    image_path: Path,
+    field_spec: list[FieldSpec],
+    fewshot: list[dict],
+) -> list[FieldResult]:
     if model_name not in _REGISTRY:
         raise KeyError(f"unknown model: {model_name}")
-    return _REGISTRY[model_name](image_path, field_spec)
+    return _REGISTRY[model_name](image_path, field_spec, fewshot)

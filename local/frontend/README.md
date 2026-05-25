@@ -29,4 +29,4 @@ npm run dev   # http://localhost:5173
 - `src/App.jsx` — Toolbar / ImageList / ImageView / ImageSummary / Preview 모두 한 파일
 - `src/api.js` — backend 호출 래퍼 (SCHEMA.md 의 엔드포인트와 1:1)
 - 잡 진행 상태와 이미지 요약은 1초 간격 폴링으로 갱신
-- 추출 필드는 `App.jsx` 의 `DEFAULT_FIELD_SPEC` 으로 정의 — 다른 문서 종류라면 이 배열만 바꾸면 된다
+- 추출 필드는 backend `server/backend/templates/<name>.yml` 에 정의 — Toolbar 의 Form Type 셀렉트로 선택. 다른 문서 종류는 yml 파일을 추가하면 자동으로 셀렉트에 노출된다.

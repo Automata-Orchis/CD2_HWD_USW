@@ -68,7 +68,58 @@ npm run dev                  # http://localhost:5173
 ## 모델 추가
 
 레포에서는 `server/backend/model_registry.py` (서버에서는 `~/backend/model_registry.py`)의 `_REGISTRY` 에
-`predict(image_path, field_spec) -> list[FieldResult]` 시그니처의 함수를 등록하면 frontend/SCHEMA를 건드리지 않고 새 모델이 노출된다.
+`predict(image_path, field_spec, fewshot) -> list[FieldResult]` 시그니처의 함수를 등록하면 frontend/SCHEMA를 건드리지 않고 새 모델이 노출된다. `fewshot` 을 사용하지 않는 모델은 인자만 받고 무시한다.
+
+## 신청서 종류 추가 (Form Template)
+
+추출 항목과 (선택적으로) 모델용 답변 예시를 **신청서 종류마다 하나의 yml 파일**로 관리한다. 위치는 `server/backend/templates/`. 새 파일을 만들면 frontend 의 **Form Type 드롭다운에 자동 추가**된다 (backend 재시작 불필요, frontend 만 새로고침).
+
+### 파일 구조 (`templates/<name>.yml`)
+
+```yaml
+name: default              # 식별자 — 영문 snake_case, 다른 yml 과 중복 금지
+label: 테스트_1             # 화면에 보일 이름 — 한국어 자유
+
+field_spec:                # 추출할 항목 목록 (순서 = Image Summary · Preview 시트 컬럼 순서)
+  - key: full_name         #   시스템 식별자. 모델에게도 이 키로 답하라고 시키므로 영문 권장
+    label: 성명             #   사람이 읽는 라벨. 한국어 가능
+    type: text             #   현재 text 만 유효 (number/date 등은 추후 확장)
+  - key: account
+    label: 계좌번호(은행명)
+    type: text
+  # ... 필요한 만큼
+
+fewshot: []                # 모델에게 보여줄 답안 예시. 비어 있어도 동작 (현 기본값)
+```
+
+### `fewshot` 채워 넣을 때
+
+이미지를 포함하지 않는 텍스트 user/assistant 페어. 실제 분석 이미지 메시지 앞에 그대로 삽입되어 출력 형식을 시연한다 (`_qwen_predict` 의 messages 구성과 동일 구조).
+
+```yaml
+fewshot:
+  - user: "이미지에서 full_name, account, rrn, address, phone 을 JSON 객체로만 답하라. 값이 없으면 (Unknown)."
+    assistant: '{"full_name": "홍길동", "account": "신한은행 110-123-456789", "rrn": "900101-1234567", "address": "서울시 강남구 테헤란로 1", "phone": "010-1234-5678"}'
+  - user: "이미지에서 full_name, account, rrn, address, phone 을 JSON 객체로만 답하라. 값이 없으면 (Unknown)."
+    assistant: '{"full_name": "김민수", "account": "(Unknown)", "rrn": "(Unknown)", "address": "부산시 해운대구 우동", "phone": "010-9876-5432"}'
+```
+
+- 페어 수는 보통 2~5쌍 권장. 너무 많으면 프롬프트가 길어져 추론이 느려진다.
+- `assistant` 값은 작은따옴표(`'…'`)로 감싸는 것이 안전 — 안쪽 JSON 의 큰따옴표를 YAML 이 종료 따옴표로 오해하지 않게.
+
+### 새 신청서 추가 절차
+
+1. `server/backend/templates/account_open.yml` 같이 새 파일 생성 (기존 `default.yml` 복사 → 수정이 가장 빠름)
+2. `name` 을 파일명과 일치하는 고유 식별자로, `label` 을 화면 표시명으로, `field_spec` 을 그 신청서에 맞는 항목 목록으로 변경
+3. 파일 저장 — backend 는 매 요청마다 디렉토리를 다시 스캔하므로 재시작 불필요
+4. frontend 페이지 새로고침 → Form Type 드롭다운에 새 항목이 노출됨
+
+### 작성 시 주의
+
+- 들여쓰기는 **공백만** (탭 금지). 한 파일 안에서 일관성만 지키면 2칸·4칸 자유. 기본은 2칸.
+- 콜론(`:`) 뒤에 반드시 공백 한 칸.
+- 리스트 항목은 `-` (대시 + 공백) 으로 시작.
+- 값에 콜론·따옴표가 들어가면 큰따옴표로 감싸기: `label: "Account No. (Bank Name)"`.
 
 ## 모델 정보 — Qwen3.5-9B
 

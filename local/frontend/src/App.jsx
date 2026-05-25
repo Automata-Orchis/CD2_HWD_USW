@@ -1,20 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api.js'
 
-// PLAN.md §3 예시 필드. 실제로는 백엔드 /analyze 의 field_spec 으로 가변 명세 가능.
-const DEFAULT_FIELD_SPEC = [
-  { key: 'full_name',  label: 'Full Name',                     type: 'text' },
-  { key: 'account',    label: 'Account No. (Bank Name)',       type: 'text' },
-  { key: 'rrn',        label: 'Resident Registration Number',  type: 'text' },
-  { key: 'address',    label: 'Address',                       type: 'text' },
-  { key: 'phone',      label: 'Phone Number',                  type: 'text' },
-]
-
 export default function App() {
   const [models, setModels] = useState([])
   const [devices, setDevices] = useState([])
+  const [templates, setTemplates] = useState([])
   const [model, setModel] = useState('')
   const [device, setDevice] = useState('')
+  const [templateName, setTemplateName] = useState('')
   const [uploaded, setUploaded] = useState([]) // 업로드 전체 누적 — Image List 의 소스
   const [jobId, setJobId] = useState(null)
   const [job, setJob] = useState(null)
@@ -34,9 +27,11 @@ export default function App() {
       try {
         const m = await api.listModels()
         const d = await api.listDevices()
-        setModels(m.models); setDevices(d.devices)
+        const t = await api.listTemplates()
+        setModels(m.models); setDevices(d.devices); setTemplates(t.templates)
         if (m.models[0]) setModel(m.models[0])
         if (d.devices[0]) setDevice(d.devices[0])
+        if (t.templates[0]) setTemplateName(t.templates[0].name)
       } catch (e) { setError(`backend 연결 실패: ${e.message}`) }
     })()
   }, [])
@@ -103,12 +98,13 @@ export default function App() {
     status: (statusMap[u.image_id] === 'done' || accumulatedRows[u.image_id]) ? 'done' : 'working',
   })), [uploaded, statusMap, accumulatedRows])
 
-  const fieldSpec = job?.field_spec ?? DEFAULT_FIELD_SPEC
+  const selectedTemplate = templates.find((t) => t.name === templateName)
+  const fieldSpec = job?.field_spec ?? selectedTemplate?.field_spec ?? []
   const sheetRows = useMemo(() => Object.values(accumulatedRows), [accumulatedRows])
 
   const isRunning = job?.status === 'running'
   const undoneCount = imagesForList.filter((i) => i.status !== 'done').length
-  const canAnalyze = model && device && undoneCount > 0 && !isRunning
+  const canAnalyze = model && device && templateName && undoneCount > 0 && !isRunning
 
   const handleUpload = async (e) => {
     const files = [...(e.target.files || [])]
@@ -129,7 +125,7 @@ export default function App() {
       if (!undone.length) { setError('처리할 새 이미지가 없습니다'); return }
       const { job_id } = await api.analyze({
         image_ids: undone.map((i) => i.image_id),
-        model, device, field_spec: DEFAULT_FIELD_SPEC,
+        model, device, template_name: templateName,
       })
       setJobId(job_id)
       setSelectedImage(undone[0].image_id)
@@ -190,6 +186,13 @@ export default function App() {
             ))}
           </div>
         </div>
+
+        <label>
+          <span className="cap">Form Type</span>
+          <select value={templateName} onChange={(e) => setTemplateName(e.target.value)} disabled={isRunning}>
+            {templates.map((t) => <option key={t.name} value={t.name}>{t.label}</option>)}
+          </select>
+        </label>
 
         <label className="upload">
           <span className="cap">Upload Images</span>

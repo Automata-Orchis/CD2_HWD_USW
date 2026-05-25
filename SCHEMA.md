@@ -3,7 +3,7 @@
 `frontend ↔ backend ↔ model` 사이에서 주고받는 데이터의 형식 정의.
 모든 통신은 FastAPI 기반 HTTP/JSON, 바이너리(이미지)는 `multipart/form-data`.
 
-> PLAN.md §3의 5개 필드(성명·계좌·주민번호·주소·전화)는 예시이며, 실제 추출 항목은 문서 종류에 따라 달라진다. 따라서 필드 집합은 하드코딩하지 않고 분석 요청 시점에 `field_spec`으로 명세한다.
+> PLAN.md §3의 5개 필드(성명·계좌·주민번호·주소·전화)는 예시이며, 실제 추출 항목은 문서 종류에 따라 달라진다. 따라서 필드 집합은 하드코딩하지 않고 신청서 종류별 **Template**(서버 측 `server/backend/templates/<name>.yml`)에 정의한다. 분석 요청 시 frontend 는 선택된 `template_name` 만 보내며 backend 가 그 template 의 `field_spec` 과 `fewshot` 을 읽어 적용한다.
 
 ## 1. 열거형 (Enums)
 
@@ -74,6 +74,28 @@
 }
 ```
 
+### 2.6 FewshotPair — 모델 프롬프트에 끼우는 텍스트 예시
+
+```json
+{
+  "user": "이미지에서 ... JSON 객체로만 답하라.",
+  "assistant": "{\"full_name\": \"홍길동\", ...}"
+}
+```
+- 이미지를 포함하지 않는 텍스트 user/assistant 페어. 실제 분석 대상 이미지 메시지 앞에 삽입되어 출력 형식을 시연한다.
+
+### 2.7 Template — 신청서 종류 정의
+
+```json
+{
+  "name": "default",
+  "label": "기본 (5필드)",
+  "field_spec": [ /* FieldSpec, ... */ ],
+  "fewshot":    [ /* FewshotPair, ... */ ]
+}
+```
+- 서버 측 `server/backend/templates/<name>.yml` 에 YAML 로 저장. 매 요청마다 디스크에서 다시 읽으므로 서버 재시작 없이 추가/수정 가능.
+
 ## 3. Endpoints
 
 ### 3.1 환경 조회
@@ -82,6 +104,7 @@
 |---|---|---|
 | `GET` | `/models` | `{"models": ["Qwen3.5-9B", ...]}` |
 | `GET` | `/devices` | `{"devices": ["cpu", "gpu"]}` |
+| `GET` | `/templates` | `{"templates": [ /* Template, ... */ ]}` |
 
 ### 3.2 이미지 업로드
 
@@ -96,10 +119,12 @@
   "image_ids": ["img_001", "img_002"],
   "model": "Qwen3.5-9B",
   "device": "gpu",
-  "field_spec": [ /* FieldSpec, ... */ ]
+  "template_name": "default"
 }
 ```
 → `{"job_id": "job_abc"}`
+
+`template_name` 으로 지정한 Template 의 `field_spec` 과 `fewshot` 이 자동 적용된다.
 
 ### 3.4 분석 정지
 

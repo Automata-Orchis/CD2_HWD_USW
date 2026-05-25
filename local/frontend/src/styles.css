@@ -6,14 +6,19 @@ h2 { margin: 16px 0 8px; font-size: 16px; padding-left: 10px; }
 h3 { margin: 0 0 8px; font-size: 14px; color: #555; }
 .err { background: #fee; border: 1px solid #f99; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; }
 
-.toolbar { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; align-items: end;
+/* columns: Model | Device | Form Type | Upload | Button
+   Device 는 CPU/GPU 라벨 폭에 딱 맞춰 auto, 버튼도 auto.
+   나머지 셋(Model · Form Type · Upload)이 1fr 로 남은 공간을 균등 분할. */
+.toolbar { display: grid; grid-template-columns: 1fr auto 1fr 1fr auto; gap: 8px; align-items: end;
            background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 12px; }
 .toolbar label, .toolbar .device-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #555; }
 .toolbar .cap { padding-left: 10px; }
 .toolbar select, .toolbar input[type=file] { height: 32px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px; background: #fff; box-sizing: border-box; }
-.device { border: 1px solid #ccc; border-radius: 4px; height: 32px; padding: 0 8px; display: flex; align-items: center; box-sizing: border-box; background: #fff; }
+.device { border: 1px solid #ccc; border-radius: 4px; height: 32px; padding: 0 8px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; background: #fff; }
 .device label { display: inline-flex; flex-direction: row; align-items: center; gap: 4px; font-size: 14px; color: #222; }
 .device label + label { margin-left: 12px; }
+/* 브라우저 기본 input[type=radio] 마진(Chrome: 좌 5 / 우 3)은 좌우 비대칭이므로 0 으로 통일. */
+.device input[type=radio] { margin: 0; }
 button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
 .toolbar button { height: 32px; padding: 0 16px; box-sizing: border-box; }
 button:disabled { opacity: 0.4; cursor: not-allowed; }

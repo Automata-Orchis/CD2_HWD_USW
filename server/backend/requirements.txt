@@ -3,6 +3,7 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.6
 python-multipart==0.0.9
 pydantic==2.9.2
+PyYAML==6.0.2
 
 # --- PyTorch (cu121 wheels — driver 535.288.01 / CUDA 12.x 호환) ---
 --extra-index-url https://download.pytorch.org/whl/cu121

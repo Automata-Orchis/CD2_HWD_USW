@@ -54,11 +54,23 @@ class Job(BaseModel):
     images: list[ImageInfo]
 
 
+class FewshotPair(BaseModel):
+    user: str
+    assistant: str
+
+
+class Template(BaseModel):
+    name: str
+    label: str
+    field_spec: list[FieldSpec]
+    fewshot: list[FewshotPair] = []
+
+
 class AnalyzeRequest(BaseModel):
     image_ids: list[str]
     model: str
     device: Device
-    field_spec: list[FieldSpec]
+    template_name: str
 
 
 class EditRequest(BaseModel):

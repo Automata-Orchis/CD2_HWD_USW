@@ -49,3 +49,15 @@
 - `model_registry.py` 에 `_qwen_predict` 어댑터 작성 + `_REGISTRY` 에 `"Qwen3.5-9B"` 등록 — 모듈 전역 lazy 캐시 + JSON 강제 프롬프트 + 코드 펜스 제거 파서 + 단일 generate. 첫 호출 ~161s 적재, 이후 ~8s/이미지.
 - README.md 갱신 — "VLM 환경 준비" 섹션 신설 + "서버 환경" 라인을 최종 검증 환경(transformers 5.9.0 / torch 2.5.1+cu121 / torchvision 0.20.1+cu121 / hf_transfer 0.1.9 등) 으로 교체.
 - 세션 영속화 자동화 — `requirements.txt` 에 cu121 torch wheel 핀 + ML stack 추가, `bootstrap.sh` 가 transformers `@v5.9.0` git pin (멱등 skip) + 모델 weight 부재 시 `snapshot_download` 까지 처리하도록 확장. 매 세션 `bash bootstrap.sh` 한 줄로 전 환경 복원 가능.
+
+## 2026-05-25~26
+
+- Form Template 시스템 도입 — 신청서 종류별 추출 필드/few-shot 을 `server/backend/templates/<name>.yml` 에 정의하고 frontend Form Type 드롭다운에서 선택. `/analyze` 는 `field_spec` 대신 `template_name` 만 받고 backend 가 template 의 `field_spec`/`fewshot` 을 읽어 `_qwen_predict` 에 전달.
+- `templates_io.py` 신규 — 매 요청마다 `templates/` 디렉토리 재스캔으로 yml 추가/수정 시 backend 재시작 불필요.
+- `schemas.py` 에 `FewshotPair` / `Template` 추가 + `AnalyzeRequest.field_spec` → `template_name` 교체.
+- `model_registry.py` 의 `predict` 시그니처에 `fewshot` 추가 — `_qwen_predict` 가 fewshot user/assistant 페어를 image 메시지 앞에 삽입(verify_qwen 의 `messages[1~4]` 구조), `_qwen_build_prompt` 는 그대로 유지.
+- frontend `api.js` 에 `listTemplates` 추가, `App.jsx` 의 `DEFAULT_FIELD_SPEC` 하드코딩 제거 후 토올바에 Form Type 셀렉트 추가, `analyze` body 가 `template_name` 만 전송.
+- `templates/default.yml` 작성(기본 5필드, `fewshot: []`) + `README.md` 에 "신청서 종류 추가 (Form Template)" 섹션 신설 + `SCHEMA.md` 의 `Template`/`FewshotPair`/`POST /analyze` 갱신.
+- `requirements.txt` 에 `PyYAML 6.0.2` 추가.
+- Toolbar grid 재정의 — Form Type 추가로 자식이 5개가 되어 기존 `1fr 1fr 1fr auto` 4 트랙과 불일치하던 것을 `1fr auto 1fr 1fr auto` 로 교체. Device 는 컨텐츠 폭(`auto`), Model/Form Type/Upload 가 `1fr` 균등 분할.
+- Device 박스 내부 좌우 여백 비대칭 수정 — 브라우저 기본 `input[type=radio]` 마진(Chrome `좌5/우3`)을 `0` 으로 reset + `.device { justify-content: center }`.

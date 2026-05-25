@@ -1,0 +1,21 @@
+name: default
+label: 테스트_1
+
+field_spec:
+  - key: full_name
+    label: 성명
+    type: text
+  - key: account
+    label: 계좌번호(은행명)
+    type: text
+  - key: rrn
+    label: 주민등록번호
+    type: text
+  - key: address
+    label: 주소
+    type: text
+  - key: phone
+    label: 전화번호
+    type: text
+
+fewshot: []

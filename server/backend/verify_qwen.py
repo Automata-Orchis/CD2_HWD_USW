@@ -35,7 +35,7 @@ def main() -> None:
         sys.exit(1)
 
     image_path = Path(sys.argv[1])
-    prompt = sys.argv[2] if len(sys.argv) >= 3 else "이 이미지에 보이는 내용을 한 문장으로 설명하라."
+    prompt = sys.argv[2] if len(sys.argv) >= 3 else "few shot에 맞춰 이미지에 대한 정보를 출력하라."
 
     if not MODEL_DIR.exists():
         print(f"model dir not found: {MODEL_DIR}")
@@ -81,17 +81,52 @@ def main() -> None:
     # [3/4] Input
     print(f"[3/4] preparing input")
     image = Image.open(image_path).convert("RGB")
+    fewshot_request = (
+        "이미지에서 full_name, account, rrn, address, phone 을 JSON 객체로만 답하라. "
+        "값이 없으면 (Unknown). "
+    )
     messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a helpful assistant. "
+                "Always follow the user's constraints strictly. "
+                "추론 과정은 생략하고, 사용자의 요구사항만을 출력할 것. "
+                )
+        },
+        # Few-shot 1: 모든 필드 채워진 케이스 — JSON 객체 한 줄만 출력하는 규약 시연
+        {"role": "user", "content": fewshot_request},
+        {
+            "role": "assistant",
+            "content": (
+                '{"full_name": "홍길동", "account": "신한은행 110-123-456789",'
+                ' "rrn": "900101-1234567", "address": "서울시 강남구 테헤란로 1",'
+                ' "phone": "010-1234-5678"}'
+            ),
+        },
+        # Few-shot 2: 일부 누락 케이스 — "값이 없으면 빈 문자열" 규약 시연
+        {"role": "user", "content": fewshot_request},
+        {
+            "role": "assistant",
+            "content": (
+                '{"full_name": "김민수", "account": "(Unknown)",'
+                ' "rrn": "(Unknown)", "address": "부산시 해운대구 우동",'
+                ' "phone": "010-9876-5432"}'
+            ),
+        },
         {
             "role": "user",
             "content": [
-                {"type": "image"},
-                {"type": "text", "text": prompt},
-            ],
+                {"type": "image", "image": "image_path_or_url"},
+                {"type": "text", "text": prompt}
+            ]
         }
     ]
     text = processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True,
+        messages, 
+        tokenize=False, 
+        add_generation_prompt=True, 
+        enable_thinking=False,
     )
     inputs = processor(
         text=[text], images=[image], return_tensors="pt", padding=True,
