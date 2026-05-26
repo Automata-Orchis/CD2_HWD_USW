@@ -12,11 +12,28 @@ from __future__ import annotations
 import json
 import random
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Callable
 
 from schemas import FieldResult, FieldSpec
+
+# Qwen3.5-9B 의 적재 소요 시간 추정(실측 ~161s). 게이지 % 산출용 — 실제 호출 완료가 신호이며
+# 이 값은 어디까지나 frontend 시각 표현용 추정값이다.
+_QWEN_LOAD_EST_SEC = 180.0
+
+# 모델별 적재 상태. predict() 호출자가 lazy 로드를 트리거하기 전에 사용자가 명시적으로
+# start_loading() 을 부르면 백그라운드 스레드에서 미리 적재한다.
+_load_state: dict[str, dict] = {}
+# RLock — start_loading 이 락을 쥔 상태에서 _snapshot() 을 호출하는 재귀 진입을 허용한다.
+_load_lock = threading.RLock()
+
+
+def _init_load_state() -> None:
+    # Mock-Model 은 적재 비용이 없으므로 항상 loaded 로 둔다.
+    _load_state.setdefault("Mock-Model", {"state": "loaded", "progress": 1.0, "started_at": None, "error": None})
+    _load_state.setdefault("Qwen3.5-9B", {"state": "unloaded", "progress": 0.0, "started_at": None, "error": None})
 
 
 def _mock_predict(
@@ -51,27 +68,102 @@ def _mock_predict(
 _QWEN_MODEL_DIR = Path.home() / "model" / "Qwen3.5-9B"
 _qwen_processor = None
 _qwen_model = None
+# 동시에 두 진입자(예: Load 버튼 worker + Analyze 의 lazy load) 가 _qwen_get 에 들어와도
+# 실제 적재는 단 한 번만 수행되도록 보호하는 mutex. RLock 인 _load_lock 과 분리한 이유 —
+# 적재 161s 동안 _load_lock 을 점유하면 _snapshot()/get_load_status 가 막혀 frontend
+# 진행률 폴링이 멈춘다. 적재용 mutex 와 status 접근용 lock 을 분리한다.
+_qwen_load_mutex = threading.Lock()
 
 
 def _qwen_get():
-    global _qwen_processor, _qwen_model
-    if _qwen_model is None:
-        import torch
-        from transformers import AutoModelForImageTextToText, AutoProcessor
+    """가중치 lazy load. 이미 적재됐으면 즉시 반환.
 
-        # local_files_only=True — 폐쇄망/불안정 네트워크에서 HF Hub 메타 조회로
-        # from_pretrained 가 다운로드 재시도 루프에 빠지는 것을 차단.
-        _qwen_processor = AutoProcessor.from_pretrained(
-            str(_QWEN_MODEL_DIR), local_files_only=True
-        )
-        _qwen_model = AutoModelForImageTextToText.from_pretrained(
-            str(_QWEN_MODEL_DIR),
-            dtype=torch.bfloat16,
-            device_map="auto",
-            local_files_only=True,
-        )
-        _qwen_model.eval()
+    explicit Load 버튼 흐름(`start_loading` → `_qwen_load_worker`)과 자동 lazy load
+    흐름(`predict` → `_qwen_predict`) 둘 다 이 함수를 거친다. mutex 로 단일 적재 보장 +
+    _load_state 갱신을 함수 안에 일원화해 두 흐름 모두 frontend 진행률을 본다.
+    """
+    global _qwen_processor, _qwen_model
+    if _qwen_model is not None:
+        return _qwen_processor, _qwen_model
+    _init_load_state()
+    with _qwen_load_mutex:
+        # double-check — 대기 중에 다른 호출자가 적재를 완료했을 수 있다.
+        if _qwen_model is not None:
+            return _qwen_processor, _qwen_model
+        with _load_lock:
+            _load_state["Qwen3.5-9B"].update({
+                "state": "loading", "progress": 0.0, "started_at": time.time(), "error": None,
+            })
+        try:
+            import torch
+            from transformers import AutoModelForImageTextToText, AutoProcessor
+
+            # local_files_only=True — 폐쇄망/불안정 네트워크에서 HF Hub 메타 조회로
+            # from_pretrained 가 다운로드 재시도 루프에 빠지는 것을 차단.
+            _qwen_processor = AutoProcessor.from_pretrained(
+                str(_QWEN_MODEL_DIR), local_files_only=True
+            )
+            _qwen_model = AutoModelForImageTextToText.from_pretrained(
+                str(_QWEN_MODEL_DIR),
+                dtype=torch.bfloat16,
+                device_map="auto",
+                local_files_only=True,
+            )
+            _qwen_model.eval()
+            with _load_lock:
+                _load_state["Qwen3.5-9B"].update({"state": "loaded", "progress": 1.0})
+        except Exception as e:
+            with _load_lock:
+                _load_state["Qwen3.5-9B"].update({"state": "failed", "error": repr(e)})
+            raise
     return _qwen_processor, _qwen_model
+
+
+# ---------- 모델 적재 제어 (frontend "모델 로드" 버튼 + 게이지) ----------
+
+def _qwen_load_worker() -> None:
+    """백그라운드 스레드 — Qwen 적재 트리거. state 전환은 `_qwen_get` 안에서 처리."""
+    try:
+        _qwen_get()
+    except Exception:
+        # _qwen_get 안의 except 가 이미 state=failed 로 마킹했다. 여기선 추가 처리 없음.
+        pass
+
+
+def start_loading(model_name: str) -> dict:
+    """사용자 명시적 적재 트리거. 이미 loading/loaded 면 현 상태만 반환."""
+    _init_load_state()
+    if model_name not in _load_state:
+        return {"state": "unknown", "progress": 0.0, "error": f"unknown model: {model_name}"}
+    with _load_lock:
+        state = _load_state[model_name]
+        if state["state"] in ("loading", "loaded"):
+            return _snapshot(model_name)
+        if model_name == "Qwen3.5-9B":
+            state.update({"state": "loading", "progress": 0.0, "started_at": time.time(), "error": None})
+            threading.Thread(target=_qwen_load_worker, daemon=True).start()
+        else:
+            # Mock 등 적재 비용 없는 모델 — 즉시 loaded.
+            state.update({"state": "loaded", "progress": 1.0, "started_at": None, "error": None})
+    return _snapshot(model_name)
+
+
+def get_load_status(model_name: str) -> dict:
+    _init_load_state()
+    if model_name not in _load_state:
+        return {"state": "unknown", "progress": 0.0, "error": None}
+    return _snapshot(model_name)
+
+
+def _snapshot(model_name: str) -> dict:
+    """현재 상태의 얕은 복사 + loading 중이면 경과시간 기반 progress 추정."""
+    with _load_lock:
+        s = dict(_load_state[model_name])
+    if s["state"] == "loading" and s.get("started_at"):
+        elapsed = time.time() - s["started_at"]
+        # 1.0 미만으로 클램프 — 실제 적재 완료 시 worker 가 1.0 으로 갱신한다.
+        s["progress"] = max(s.get("progress", 0.0), min(0.95, elapsed / _QWEN_LOAD_EST_SEC))
+    return {"state": s["state"], "progress": s["progress"], "error": s.get("error")}
 
 
 def _qwen_build_prompt(field_spec: list[FieldSpec], n_pages: int) -> str:
@@ -101,14 +193,22 @@ def _qwen_parse(text: str, field_spec: list[FieldSpec]) -> dict[str, str | None]
     body = re.sub(r"^```(?:json)?\s*", "", body)
     body = re.sub(r"\s*```$", "", body)
     parsed: dict = {}
+    parse_error: str | None = None
     start, end = body.find("{"), body.rfind("}")
     if start != -1 and end > start:
         try:
             raw = json.loads(body[start : end + 1])
             if isinstance(raw, dict):
                 parsed = raw
-        except json.JSONDecodeError:
-            pass
+            else:
+                parse_error = f"top-level is {type(raw).__name__}, not dict"
+        except json.JSONDecodeError as e:
+            parse_error = f"JSONDecodeError: {e}"
+    else:
+        parse_error = f"no balanced braces (find='{start}', rfind='{end}')"
+    if parse_error or not parsed:
+        # 파싱 실패 시 raw 를 stdout 에 그대로 찍는다 — 잘림(`}` 누락) vs 형식 깨짐 진단용.
+        print(f"[qwen parse fail] {parse_error or 'empty dict'} | raw_len={len(text)} | raw={text!r}", flush=True)
     out: dict[str, str | None] = {}
     for s in field_spec:
         v = parsed.get(s.key)
@@ -151,7 +251,7 @@ def _qwen_predict(
     )
     inputs = processor(text=[text], images=images, return_tensors="pt", padding=True).to(model.device)
     with torch.inference_mode():
-        out = model.generate(**inputs, max_new_tokens=512, do_sample=False)
+        out = model.generate(**inputs, max_new_tokens=1024, do_sample=False)
     new_tokens = out[:, inputs.input_ids.shape[1] :]
     output_text = processor.batch_decode(new_tokens, skip_special_tokens=True)[0]
     parsed = _qwen_parse(output_text, field_spec)

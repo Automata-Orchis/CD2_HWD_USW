@@ -4,12 +4,18 @@ import { api } from './api.js'
 export default function App() {
   const [models, setModels] = useState([])
   const [devices, setDevices] = useState([])
-  const [templates, setTemplates] = useState([])
   const [model, setModel] = useState('')
   const [device, setDevice] = useState('')
+  // 선택된 모델의 적재 상태. {state: 'unloaded'|'loading'|'loaded'|'failed', progress: 0~1}
+  const [modelStatus, setModelStatus] = useState({ state: 'unloaded', progress: 0 })
+  // 현재 선택된 카테고리(template). 카테고리 Sub Box 클릭 시 자동 설정.
   const [templateName, setTemplateName] = useState('')
-  // 업로드된 신청서 전체 누적 — Application List 의 소스. 1 신청서 = 이미지 1장 또는 PDF 분할 N장.
-  const [uploadedApps, setUploadedApps] = useState([])
+  const [templateLabel, setTemplateLabel] = useState('')
+  // 서버 사전 적재본에서 로드된 신청서 — Application List 의 소스. 카테고리 1개 분.
+  const [loadedApps, setLoadedApps] = useState([])
+  // 작업 선택 대시보드 표시 여부 + 카테고리 통계.
+  const [dashboardOpen, setDashboardOpen] = useState(false)
+  const [categories, setCategories] = useState([])
   const [jobId, setJobId] = useState(null)
   const [job, setJob] = useState(null)
   const [selectedApp, setSelectedApp] = useState(null)
@@ -18,25 +24,49 @@ export default function App() {
   // application_id → SheetRow. 새 job 으로 바꿔도 이전 done 행이 유지되도록 frontend 에서 누적한다.
   const [accumulatedRows, setAccumulatedRows] = useState({})
   const [error, setError] = useState('')
-  const fileRef = useRef(null)
   // done 처리된 신청서의 마지막 ApplicationSummary 캐시. 새 job 으로 재분석할 때 backend 는
   // 이전 job_id 의 field_results 를 모르므로 빈 fields 가 돌아오는데, 그 자리에 채워 넣는다.
   const doneSummariesRef = useRef({})
 
-  // 초기 메타데이터
+  // 초기 메타데이터 — model / device 만. template 은 카테고리 선택 시점에 결정.
   useEffect(() => {
     (async () => {
       try {
         const m = await api.listModels()
         const d = await api.listDevices()
-        const t = await api.listTemplates()
-        setModels(m.models); setDevices(d.devices); setTemplates(t.templates)
+        setModels(m.models); setDevices(d.devices)
         if (m.models[0]) setModel(m.models[0])
         if (d.devices[0]) setDevice(d.devices[0])
-        if (t.templates[0]) setTemplateName(t.templates[0].name)
       } catch (e) { setError(`backend 연결 실패: ${e.message}`) }
     })()
   }, [])
+
+  // 모델 적재 상태 — model 바뀌면 1회 조회.
+  useEffect(() => {
+    if (!model) { setModelStatus({ state: 'unloaded', progress: 0 }); return }
+    let alive = true
+    ;(async () => {
+      try {
+        const s = await api.modelStatus(model)
+        if (alive) setModelStatus(s)
+      } catch (e) { /* 무시: 폴링 효과에서 재시도 */ }
+    })()
+    return () => { alive = false }
+  }, [model])
+
+  // 적재 중일 때만 진행률을 1초마다 폴링한다. loaded/failed/unloaded 가 되면 효과 종료.
+  useEffect(() => {
+    if (!model || modelStatus.state !== 'loading') return
+    let alive = true
+    const tick = async () => {
+      try {
+        const s = await api.modelStatus(model)
+        if (alive) setModelStatus(s)
+      } catch (e) { /* 무시 */ }
+    }
+    const id = setInterval(tick, 1000)
+    return () => { alive = false; clearInterval(id) }
+  }, [model, modelStatus.state])
 
   // 잡 폴링 + 시트 누적
   useEffect(() => {
@@ -98,28 +128,66 @@ export default function App() {
 
   // 한 번이라도 done 으로 들어간 적이 있는 application_id 는 새 job 의 statusMap 에 없어도
   // done 으로 유지한다 (accumulatedRows 는 시트 누적과 동일한 done 집합을 이미 갖고 있다).
-  const appsForList = useMemo(() => uploadedApps.map((u) => ({
+  const appsForList = useMemo(() => loadedApps.map((u) => ({
     ...u,
     status: (statusMap[u.application_id] === 'done' || accumulatedRows[u.application_id]) ? 'done' : 'working',
-  })), [uploadedApps, statusMap, accumulatedRows])
+  })), [loadedApps, statusMap, accumulatedRows])
 
-  const selectedTemplate = templates.find((t) => t.name === templateName)
-  const fieldSpec = job?.field_spec ?? selectedTemplate?.field_spec ?? []
+  const fieldSpec = job?.field_spec ?? []
   const sheetRows = useMemo(() => Object.values(accumulatedRows), [accumulatedRows])
 
   const isRunning = job?.status === 'running'
+  const isModelLoaded = modelStatus.state === 'loaded'
+  const isModelLoading = modelStatus.state === 'loading'
   const undoneCount = appsForList.filter((a) => a.status !== 'done').length
-  const canAnalyze = model && device && templateName && undoneCount > 0 && !isRunning
+  // 미적재 상태에서도 Analyze 허용 — 그 경우 자동으로 lazy load 가 트리거된다.
+  // 진행 중인 적재(`loading`) 중에는 중복 트리거를 막기 위해 막아둔다.
+  const canAnalyze = model && device && templateName && undoneCount > 0 && !isRunning && !isModelLoading
 
-  const handleUpload = async (e) => {
-    const files = [...(e.target.files || [])]
-    if (!files.length) return
+  const handleLoadModel = async () => {
+    if (!model) return
     setError('')
     try {
-      const { applications } = await api.upload(files)
-      setUploadedApps((prev) => [...prev, ...applications])
+      const s = await api.loadModel(model)
+      setModelStatus(s)
+    } catch (e) { setError(e.message) }
+  }
+
+  const loadButtonLabel = () => {
+    switch (modelStatus.state) {
+      case 'loading': return `로딩 중 ${Math.round((modelStatus.progress || 0) * 100)}%`
+      case 'loaded':  return '✓ 로드됨'
+      case 'failed':  return '재시도'
+      default:        return '모델 로드'
+    }
+  }
+
+  // 작업 선택 — 대시보드 토글 + 카테고리 통계 새로고침.
+  const handleToggleDashboard = async () => {
+    setError('')
+    if (dashboardOpen) { setDashboardOpen(false); return }
+    try {
+      const { categories } = await api.listCategories()
+      setCategories(categories)
+      setDashboardOpen(true)
     } catch (err) { setError(err.message) }
-    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  // Sub Box 클릭 — 해당 카테고리 신청서 목록 로드. 카테고리가 바뀌면 작업 상태 리셋.
+  const handleCategorySelect = async (cat) => {
+    setError('')
+    try {
+      const { applications } = await api.listApplications(cat.template_name)
+      const changed = cat.template_name !== templateName
+      setLoadedApps(applications)
+      setTemplateName(cat.template_name)
+      setTemplateLabel(cat.label)
+      if (changed) {
+        setJobId(null); setJob(null); setSelectedApp(null); setSummary(null)
+        setAccumulatedRows({}); doneSummariesRef.current = {}
+      }
+      setDashboardOpen(false)
+    } catch (err) { setError(err.message) }
   }
 
   const handleAnalyze = async () => {
@@ -128,6 +196,13 @@ export default function App() {
       // 이미 done 인 신청서는 다시 보내지 않는다 → 기존 작업 결과 보존.
       const undone = appsForList.filter((a) => a.status !== 'done')
       if (!undone.length) { setError('처리할 새 신청서가 없습니다'); return }
+      // 미적재 상태면 분석 트리거 직전에 자동 lazy load 를 시작한다 (idempotent — 이미
+      // loaded 면 그대로). state 를 'loading' 으로 갱신해 useEffect 의 1초 폴링이 켜지고
+      // 진행률이 frontend 에 표시된다.
+      if (!isModelLoaded) {
+        const s = await api.loadModel(model)
+        setModelStatus(s)
+      }
       const { job_id } = await api.analyze({
         application_ids: undone.map((a) => a.application_id),
         model, device, template_name: templateName,
@@ -172,11 +247,19 @@ export default function App() {
       {error && <div className="err">{error}</div>}
 
       <section className="toolbar">
-        <label>
+        <label className="model-field">
           <span className="cap">Model</span>
-          <select value={model} onChange={(e) => setModel(e.target.value)} disabled={isRunning}>
-            {models.map((m) => <option key={m} value={m}>{m}</option>)}
-          </select>
+          <div className="model-row">
+            <select value={model} onChange={(e) => setModel(e.target.value)} disabled={isRunning || isModelLoading}>
+              {models.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+            <button type="button"
+                    className={`load-model ${modelStatus.state}`}
+                    onClick={handleLoadModel}
+                    disabled={isRunning || isModelLoading || isModelLoaded}>
+              {loadButtonLabel()}
+            </button>
+          </div>
         </label>
 
         <div className="device-field">
@@ -192,25 +275,31 @@ export default function App() {
           </div>
         </div>
 
-        <label>
-          <span className="cap">Form Type</span>
-          <select value={templateName} onChange={(e) => setTemplateName(e.target.value)} disabled={isRunning}>
-            {templates.map((t) => <option key={t.name} value={t.name}>{t.label}</option>)}
-          </select>
-        </label>
-
-        <label className="upload">
-          <span className="cap">Upload Images or PDFs</span>
-          <input ref={fileRef} type="file" multiple accept="image/*,application/pdf"
-                 onChange={handleUpload} disabled={isRunning} />
-        </label>
+        <div className="select-work-field">
+          <span className="cap">Work</span>
+          <button className="select-work" onClick={handleToggleDashboard} disabled={isRunning}>
+            {templateLabel || templateName || '작업 선택'}
+          </button>
+        </div>
 
         {isRunning
           ? <button className="stop" onClick={handleStop}>Stop</button>
           : <button className="analyze" onClick={handleAnalyze} disabled={!canAnalyze}>Analysis</button>}
       </section>
 
-      {(jobId || uploadedApps.length > 0) && (
+      {dashboardOpen && (
+        <section className="dashboard">
+          <h2>작업 선택</h2>
+          <div className="cat-grid">
+            {categories.map((c) => (
+              <CategoryBox key={c.template_name} cat={c} onClick={() => handleCategorySelect(c)} />
+            ))}
+            {!categories.length && <div className="empty">— 카테고리 없음 (server/data/&lt;template&gt;/ 폴더 확인) —</div>}
+          </div>
+        </section>
+      )}
+
+      {(jobId || loadedApps.length > 0) && (
         <section className="work">
           <ApplicationList
             apps={appsForList}
@@ -457,6 +546,23 @@ function ApplicationSummary({ summary, fieldSpec, onCommitFields, onComplete }) 
         </tbody>
       </table>
       <button onClick={handleComplete} disabled={summary.status === 'done'}>Complete</button>
+    </div>
+  )
+}
+
+function CategoryBox({ cat, onClick }) {
+  const pct = Math.round((cat.rate ?? 0) * 100)
+  return (
+    <div className={`cat-box ${cat.total === 0 ? 'empty-cat' : ''}`}
+         onClick={cat.total > 0 ? onClick : undefined}>
+      <div className="cat-label">{cat.label}</div>
+      <div className="cat-stats">
+        <span>총 {cat.total}</span>
+        <span>완료 {cat.done}</span>
+        <span>미완료 {cat.incomplete}</span>
+        <span>작업률 {pct}%</span>
+      </div>
+      <div className="cat-rate"><div style={{ width: `${pct}%` }} /></div>
     </div>
   )
 }

@@ -7,11 +7,14 @@
 
 ## 0. 작업 단위 — Application
 
-작업·추론·저장의 단위는 **신청서(application)** 다. 한 신청서는 1장의 이미지 또는 N장의 페이지 이미지로 구성된다.
+작업·추론·저장의 단위는 **신청서(application)** 다. 한 신청서는 1장의 이미지 또는 N장의 페이지(PDF 내부 페이지) 로 구성된다.
 
-- **이미지 파일 1개 업로드** → 1장짜리 신청서 1건
-- **PDF 파일 1개 업로드** → 백엔드가 페이지별 PNG 로 분할하여 N장짜리 신청서 1건
+신청서는 **서버에 사전 적재된다.** 관리자가 `server/data/<template_name>/` 폴더에 PDF / 이미지를 직접 배치하고, backend 가 그 폴더를 스캔해 `applications` 테이블에 등록한다 (재스캔 멱등). frontend 는 카테고리(=template)별 통계를 받아 작업자가 카테고리를 선택하면 해당 카테고리의 신청서들을 List 에 띄운다.
+
+- **이미지 파일 1개** → 1장짜리 신청서 1건
+- **PDF 파일 1개** → 페이지 수만큼의 N장짜리 신청서 1건 (페이지는 요청 시 즉석 렌더링, 디스크 캐시 없음)
 - 같은 신청서에 속한 페이지들은 모델에게 한 번에 전달되어 **단일 ApplicationSummary** (한 명·한 신청서의 결론) 가 산출된다.
+- `server/data/original_data/` 등 reserved 폴더는 스캔 대상에서 제외된다.
 
 ## 1. 열거형 (Enums)
 
@@ -53,14 +56,17 @@
 
 ```json
 {
-  "application_id": "app_001",
+  "application_id": "app_a1b2c3d4e5",
   "filename": "홍길동.pdf",
   "status": "working",
-  "page_count": 8
+  "page_count": 8,
+  "template_name": "direct_payment"
 }
 ```
-- `filename` : 사용자가 업로드한 원본 파일명 (PDF 또는 이미지)
-- `page_count` : 1 이면 단일 이미지 신청서, ≥2 이면 PDF 분할 다중 페이지 신청서
+- `application_id` : `app_<sha1(template/filename)[:10]>` — 결정론적, 재스캔 멱등
+- `filename` : `server/data/<template>/` 내부 파일명 (PDF 또는 이미지)
+- `page_count` : 1 이면 단일 이미지 신청서, ≥2 이면 PDF 내부 페이지 수
+- `template_name` : 소속 카테고리 (= yml 파일 stem). 사전 적재 신청서는 모두 값 보유
 
 ### 2.4 ApplicationSummary
 
@@ -108,6 +114,22 @@
 }
 ```
 - 서버 측 `server/backend/templates/<name>.yml` 에 YAML 로 저장. 매 요청마다 디스크에서 다시 읽으므로 서버 재시작 없이 추가/수정 가능.
+- 파일 stem 은 `server/data/<stem>/` 폴더명과 일치해야 한다 (스캔이 stem 으로 폴더를 찾는다).
+
+### 2.8 CategoryStat — 카테고리별 작업 통계
+
+```json
+{
+  "template_name": "direct_payment",
+  "label": "기본직접지불금_지급대상자_등록신청서(농업인용)",
+  "total": 12,
+  "done": 3,
+  "incomplete": 9,
+  "rate": 0.25
+}
+```
+- `rate` : `done / total`, `total=0` 이면 `0.0`
+- frontend "작업 선택" 대시보드의 Sub Box 한 칸이 1개의 CategoryStat 에 대응
 
 ## 3. Endpoints
 
@@ -116,22 +138,31 @@
 | Method | Path | Response |
 |---|---|---|
 | `GET` | `/models` | `{"models": ["Qwen3.5-9B", ...]}` |
+| `POST` | `/models/{name}/load` | `{"state": "loading", "progress": 0.0, "error": null}` |
+| `GET` | `/models/{name}/status` | `{"state": "...", "progress": 0.0~1.0, "error": null}` |
 | `GET` | `/devices` | `{"devices": ["cpu", "gpu"]}` |
 | `GET` | `/templates` | `{"templates": [ /* Template, ... */ ]}` |
 
-### 3.2 신청서 업로드
+**모델 적재 상태(`state`)** : `unloaded` / `loading` / `loaded` / `failed`. frontend "모델 로드" 버튼이 `POST /models/{name}/load` 를 호출하면 backend 가 백그라운드 스레드로 가중치를 적재한다. 첫 추론을 lazy 로드로 기다리는 ~161s 의 UX 지연을 피하기 위함. `loading` 중에는 `progress` 가 시간 기반 추정값(실측 적재 ~180s 기준 클램프 0.95)으로 채워지고, 적재 완료 시 worker 가 1.0 으로 갱신. `Mock-Model` 처럼 적재 비용이 없는 모델은 항상 `loaded`. Analyze 시점에 모델이 미적재면 frontend 가 동일한 `POST /models/{name}/load` 를 자동 호출해 같은 적재 경로(`_qwen_load_mutex` 로 단일 적재 보장)에 진입하므로, Load 버튼은 선제 적재의 단축 UX 일 뿐 누르지 않아도 분석은 가능하다.
 
-`POST /upload` — `multipart/form-data`, 필드명 `files[]`
+### 3.2 카테고리(작업) 조회
+
+`GET /work-categories`
+→ `{"categories": [ /* CategoryStat, ... */ ]}`
+
+호출 시 backend 가 `server/data/<template>/` 를 스캔해 신규 파일을 자동 인입한 뒤 통계를 산출한다 (매 호출 재스캔). frontend "작업 선택" 버튼이 트리거한다.
+
+`GET /applications?template_name=<name>`
 → `{"applications": [ /* ApplicationInfo, ... */ ]}`
 
-업로드된 각 파일은 **신청서 1건**으로 등록된다.
-- 이미지(jpg/png 등) → 페이지 1장
-- PDF → 백엔드가 페이지별 PNG 로 분할하여 페이지 N장. 분할 후 원본 PDF 는 폐기.
+해당 카테고리의 신청서 목록. Sub Box 클릭 시 호출. 동일하게 호출 시점에 디스크 재스캔 후 반환.
 
 ### 3.3 페이지 파일 조회
 
 `GET /applications/{application_id}/pages/{ord}/file`
-→ 해당 페이지 이미지 파일 (PNG 또는 원본 이미지 확장자). `ord` 는 0-based.
+→ 해당 페이지 이미지 (PNG bytes). `ord` 는 0-based.
+- PDF 신청서 : `pypdfium2` 로 매 요청 즉석 렌더링 (디스크 캐시 없음, 브라우저 캐시로 흡수).
+- 이미지 신청서 : `ord=0` 일 때 원본 파일 그대로 반환.
 
 ### 3.4 분석 시작
 
@@ -202,4 +233,5 @@
 - DB 스키마 (PLAN.md §1의 "Database에 저장" 요구사항)
 - 다중 작업자 동시 편집 시 충돌 처리
 - 이미지 파일 크기·형식 제한
-- 여러 이미지 파일을 하나의 신청서로 묶는 그룹핑 UI (현재는 PDF 입력에만 한정)
+- 여러 이미지 파일을 하나의 신청서로 묶는 그룹핑 (현재는 PDF 1파일=1신청서 또는 이미지 1파일=1신청서)
+- 관리자용 사전 적재 / 폴더 관리 UI (현재 서버 쉘에서 파일 배치)

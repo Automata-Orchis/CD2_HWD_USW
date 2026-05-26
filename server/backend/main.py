@@ -4,20 +4,23 @@
     uvicorn main:app --host 0.0.0.0 --port 8000
     cloudflared tunnel --url http://localhost:8000
 
-한 신청서(application)는 1장(이미지) 또는 N장(PDF 페이지 분할)의 이미지로 구성된다.
-모델 추론과 사용자 작업의 단위는 모두 application 이며, image 는 그 application 의 페이지일 뿐이다.
+신청서는 서버 디스크에 사전 적재된다 — `server/data/<template_name>/` 폴더 (template_name 은
+`server/backend/templates/<name>.yml` 의 파일 stem). 한 파일(PDF 또는 이미지)이 한 application 이며,
+PDF 의 페이지는 요청 시 즉석 렌더링된다 (디스크 캐시 없음).
 """
 from __future__ import annotations
 
 import asyncio
-import shutil
+import io
+import tempfile
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 
+import categories
 import db
 import model_registry
 import templates_io
@@ -64,6 +67,24 @@ def list_models() -> dict:
     return {"models": model_registry.available_models()}
 
 
+@app.post("/models/{model_name}/load")
+def load_model(model_name: str) -> dict:
+    """사용자 명시적 적재 트리거. 첫 추론을 lazy 로드로 기다리는 ~161s 지연을
+    피하기 위해 frontend "모델 로드" 버튼이 호출한다. 이미 적재된 경우 즉시 반환.
+    """
+    if model_name not in model_registry.available_models():
+        raise HTTPException(400, detail={"error": "unknown_model", "message": model_name})
+    return model_registry.start_loading(model_name)
+
+
+@app.get("/models/{model_name}/status")
+def model_status(model_name: str) -> dict:
+    """현재 적재 상태와 진행률(0.0~1.0). loading 중에는 시간 기반 추정값."""
+    if model_name not in model_registry.available_models():
+        raise HTTPException(400, detail={"error": "unknown_model", "message": model_name})
+    return model_registry.get_load_status(model_name)
+
+
 @app.get("/devices")
 def list_devices() -> dict:
     return {"devices": [d.value for d in Device]}
@@ -74,99 +95,74 @@ def list_templates() -> dict:
     return {"templates": [t.model_dump() for t in templates_io.list_templates()]}
 
 
-# ---------- 업로드 ----------
+# ---------- 카테고리(작업 선택) ----------
 
-def _split_pdf_to_pngs(pdf_path: Path, dst_dir: Path) -> list[Path]:
-    """PDF 의 각 페이지를 PNG 로 저장하고 결과 경로 리스트를 반환한다.
+@app.get("/work-categories")
+def list_work_categories() -> dict:
+    """`server/data/<template>/` 폴더를 스캔·인입한 뒤 카테고리별 통계 반환.
 
-    scale=2.0 — 기본 72 DPI 의 2배(=144 DPI) 로 렌더. 손글씨 인식에 충분하면서
-    파일 크기·VRAM 부담이 과하지 않은 절충점.
+    frontend 의 "작업 선택" 대시보드가 호출한다. 매 호출마다 디스크 재스캔.
+    """
+    categories.scan_and_ingest()
+    return {"categories": [c.model_dump() for c in categories.category_stats()]}
+
+
+@app.get("/applications")
+def list_applications(template_name: str = Query(...)) -> dict:
+    """카테고리(template) 의 신청서 목록. 사용자가 Sub Box 클릭 시 호출."""
+    categories.scan_and_ingest()
+    return {"applications": [a.model_dump() for a in categories.applications_for(template_name)]}
+
+
+# ---------- 페이지 파일 ----------
+
+def _render_pdf_page(pdf_path: Path, ord_: int) -> bytes:
+    """PDF 의 특정 페이지를 PNG 바이트로 즉석 렌더링.
+
+    scale=2.0 — 기본 72 DPI 의 2배(=144 DPI). 손글씨 가독성과 응답 크기의 절충점.
+    디스크 캐시 없이 매 요청 시 렌더. 브라우저 캐시가 반복 요청을 흡수한다.
     """
     import pypdfium2 as pdfium
 
     pdf = pdfium.PdfDocument(str(pdf_path))
-    pages: list[Path] = []
     try:
-        for i in range(len(pdf)):
-            page = pdf[i]
-            try:
-                bitmap = page.render(scale=2.0)
-                pil = bitmap.to_pil()
-                dst = dst_dir / f"{i}.png"
-                pil.save(dst, "PNG")
-                pages.append(dst)
-            finally:
-                page.close()
+        page = pdf[ord_]
+        try:
+            bitmap = page.render(scale=2.0)
+            pil = bitmap.to_pil()
+            buf = io.BytesIO()
+            pil.save(buf, "PNG")
+            return buf.getvalue()
+        finally:
+            page.close()
     finally:
         pdf.close()
-    return pages
-
-
-@app.post("/upload")
-async def upload(files: list[UploadFile] = File(...)) -> dict:
-    if not files:
-        raise HTTPException(400, detail={"error": "no_files", "message": "files[] required"})
-    saved: list[ApplicationInfo] = []
-    with db.connect() as cx:
-        for f in files:
-            application_id = f"app_{uuid.uuid4().hex[:10]}"
-            filename = f.filename or application_id
-            suffix = Path(filename).suffix.lower()
-            app_dir = db.UPLOAD_DIR / application_id
-            app_dir.mkdir(parents=True, exist_ok=True)
-
-            if suffix == ".pdf":
-                # PDF: 원본을 임시 저장 후 페이지별 PNG 로 분할. 분할 후 원본 PDF 는 제거한다
-                # (페이지 PNG 만 있으면 모델·미리보기 모두 충분).
-                tmp_pdf = app_dir / "source.pdf"
-                with tmp_pdf.open("wb") as out:
-                    shutil.copyfileobj(f.file, out)
-                try:
-                    pages = _split_pdf_to_pngs(tmp_pdf, app_dir)
-                finally:
-                    tmp_pdf.unlink(missing_ok=True)
-                if not pages:
-                    raise HTTPException(400, detail={
-                        "error": "empty_pdf", "message": f"{filename} has no pages"
-                    })
-            else:
-                # 단일 이미지: 그대로 한 장짜리 신청서. 확장자 유지.
-                dst = app_dir / f"0{suffix or '.bin'}"
-                with dst.open("wb") as out:
-                    shutil.copyfileobj(f.file, out)
-                pages = [dst]
-
-            page_count = len(pages)
-            cx.execute(
-                "INSERT INTO applications(application_id, filename, status, page_count) VALUES (?,?,?,?)",
-                (application_id, filename, ImageStatus.blank.value, page_count),
-            )
-            for ord_, p in enumerate(pages):
-                cx.execute(
-                    "INSERT INTO application_pages(application_id, ord, path) VALUES (?,?,?)",
-                    (application_id, ord_, str(p)),
-                )
-            saved.append(ApplicationInfo(
-                application_id=application_id,
-                filename=filename,
-                status=ImageStatus.blank,
-                page_count=page_count,
-            ))
-    return {"applications": [s.model_dump() for s in saved]}
 
 
 @app.get("/applications/{application_id}/pages/{ord}/file")
 def page_file(application_id: str, ord: int):
     with db.connect() as cx:
         row = cx.execute(
-            "SELECT path FROM application_pages WHERE application_id=? AND ord=?",
-            (application_id, ord),
+            "SELECT source_path, page_count FROM applications WHERE application_id=?",
+            (application_id,),
         ).fetchone()
-    if not row:
+    if not row or not row["source_path"]:
         raise HTTPException(404, detail={
-            "error": "page_not_found", "message": f"{application_id}/{ord}"
+            "error": "application_not_found", "message": application_id
         })
-    return FileResponse(row["path"])
+    source = Path(row["source_path"])
+    if not source.exists():
+        raise HTTPException(404, detail={
+            "error": "source_missing", "message": str(source)
+        })
+    if ord < 0 or ord >= row["page_count"]:
+        raise HTTPException(404, detail={
+            "error": "page_out_of_range", "message": f"{application_id}/{ord}"
+        })
+    if source.suffix.lower() == ".pdf":
+        return Response(content=_render_pdf_page(source, ord), media_type="image/png")
+    # 이미지 신청서(.png/.jpg/.jpeg): ord 는 항상 0, 파일 그대로 서빙.
+    return FileResponse(source)
 
 
 # ---------- 분석 ----------
@@ -197,13 +193,44 @@ async def analyze(req: AnalyzeRequest) -> dict:
     return {"job_id": job_id}
 
 
-def _load_pages(application_id: str) -> list[Path]:
+def _load_source(application_id: str) -> tuple[Path, int] | None:
+    """application 의 source 파일 경로와 페이지 수 조회. 없으면 None."""
     with db.connect() as cx:
-        rows = cx.execute(
-            "SELECT path FROM application_pages WHERE application_id=? ORDER BY ord",
+        row = cx.execute(
+            "SELECT source_path, page_count FROM applications WHERE application_id=?",
             (application_id,),
-        ).fetchall()
-    return [Path(r["path"]) for r in rows]
+        ).fetchone()
+    if not row or not row["source_path"]:
+        return None
+    return Path(row["source_path"]), int(row["page_count"])
+
+
+def _materialize_pages(source: Path, page_count: int, tmpdir: Path) -> list[Path]:
+    """모델 predict 호출용 페이지 경로 리스트 생성.
+
+    - 이미지 신청서: 원본 파일 경로 그대로 (page_count=1).
+    - PDF 신청서: 페이지별 PNG 를 tmpdir 에 분할 저장. caller 가 tmpdir 정리.
+    """
+    if source.suffix.lower() != ".pdf":
+        return [source]
+    import pypdfium2 as pdfium
+
+    out: list[Path] = []
+    pdf = pdfium.PdfDocument(str(source))
+    try:
+        for i in range(page_count):
+            page = pdf[i]
+            try:
+                bitmap = page.render(scale=2.0)
+                pil = bitmap.to_pil()
+                dst = tmpdir / f"{i}.png"
+                pil.save(dst, "PNG")
+                out.append(dst)
+            finally:
+                page.close()
+    finally:
+        pdf.close()
+    return out
 
 
 async def _run_job(
@@ -215,29 +242,48 @@ async def _run_job(
 ) -> None:
     loop = asyncio.get_running_loop()
     fewshot_dicts = [f.model_dump() for f in fewshot]
+
+    def _empty_results() -> list[FieldResult]:
+        # 빈 FieldResult 한 세트 — 추론 실패 / 소스 누락 시 frontend 가 표를 그리고
+        # 사용자가 수동 입력할 수 있도록 키만 채워 저장한다.
+        return [FieldResult(key=s.key, predicted=None, accuracy=None, edited=None) for s in field_spec]
+
     try:
         for application_id in application_ids:
             if _stop_flags.get(job_id):
                 break
             _set_application_status(application_id, ImageStatus.working)
-            pages = _load_pages(application_id)
-            if not pages:
+            # per-application try/except — 한 신청서의 실패가 이후 신청서를 막지 않게 한다.
+            # 실패 시에도 빈 FieldResult 를 저장해 ApplicationSummary 가 빈 표로 렌더된다.
+            try:
+                info = _load_source(application_id)
+                if info is None:
+                    _save_results(job_id, application_id, _empty_results())
+                    continue
+                source, page_count = info
+                with tempfile.TemporaryDirectory() as tmp:
+                    pages = _materialize_pages(source, page_count, Path(tmp))
+                    if not pages:
+                        _save_results(job_id, application_id, _empty_results())
+                        continue
+                    results: list[FieldResult] = await loop.run_in_executor(
+                        None, model_registry.predict, model, pages, field_spec, fewshot_dicts
+                    )
+            except Exception as exc:
+                print(f"[predict failed] job={job_id} app={application_id}: {exc!r}", flush=True)
+                _save_results(job_id, application_id, _empty_results())
                 continue
-            results: list[FieldResult] = await loop.run_in_executor(
-                None, model_registry.predict, model, pages, field_spec, fewshot_dicts
-            )
             if _stop_flags.get(job_id):
                 _set_application_status(application_id, ImageStatus.blank)
                 break
             _save_results(job_id, application_id, results)
-            # working 상태 유지 — 사용자가 Complete 누르면 done으로 전환
+            # working 상태 유지 — 사용자가 Complete 누르면 done 으로 전환.
         with db.connect() as cx:
             stopped = bool(_stop_flags.get(job_id))
             final = JobStatus.stopped.value if stopped else JobStatus.completed.value
             cx.execute("UPDATE jobs SET status=? WHERE job_id=?", (final, job_id))
             if stopped:
-                # 사용자가 Complete 하지 않은 신청서의 결과는 모두 폐기한다.
-                # Stop = 진행 중이던 작업의 추론 결과는 신뢰하지 않는다는 의미.
+                # Stop = 진행 중이던 신청서의 비-done 결과는 폐기한다.
                 cx.execute(
                     """DELETE FROM field_results
                        WHERE job_id = ? AND application_id IN (
@@ -282,7 +328,6 @@ def _save_results(job_id: str, application_id: str, results: list[FieldResult]) 
 @app.post("/jobs/{job_id}/stop")
 async def stop_job(job_id: str) -> dict:
     if job_id not in _running_tasks:
-        # 이미 끝났거나 없는 job
         with db.connect() as cx:
             row = cx.execute("SELECT status FROM jobs WHERE job_id=?", (job_id,)).fetchone()
         if not row:
@@ -301,7 +346,7 @@ def get_job(job_id: str) -> Job:
         if not j:
             raise HTTPException(404, detail={"error": "job_not_found", "message": job_id})
         rows = cx.execute(
-            """SELECT a.application_id, a.filename, a.status, a.page_count
+            """SELECT a.application_id, a.filename, a.status, a.page_count, a.template_name
                  FROM job_applications ja JOIN applications a
                    ON ja.application_id = a.application_id
                 WHERE ja.job_id=? ORDER BY ja.ord""",
@@ -313,6 +358,7 @@ def get_job(job_id: str) -> Job:
             filename=r["filename"],
             status=ImageStatus(r["status"]),
             page_count=r["page_count"],
+            template_name=r["template_name"],
         )
         for r in rows
     ]

@@ -13,13 +13,13 @@ async function j(path, opts = {}) {
 export const api = {
   base: BASE,
   listModels:  () => j('/models'),
+  loadModel:   (name) => j(`/models/${encodeURIComponent(name)}/load`, { method: 'POST' }),
+  modelStatus: (name) => j(`/models/${encodeURIComponent(name)}/status`),
   listDevices: () => j('/devices'),
   listTemplates: () => j('/templates'),
-  upload: (files) => {
-    const fd = new FormData()
-    for (const f of files) fd.append('files', f)
-    return j('/upload', { method: 'POST', body: fd })
-  },
+  listCategories: () => j('/work-categories'),
+  listApplications: (templateName) =>
+    j(`/applications?template_name=${encodeURIComponent(templateName)}`),
   analyze: (body) => j('/analyze', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }),

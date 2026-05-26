@@ -3,15 +3,37 @@
 VLM 기반 한글 손글씨 문서 인식 시연 시스템.
 설계: `PLAN.md` · 통신 계약: `SCHEMA.md` · 작업 기록: `LOG.md` · 검증/개선 항목: `TODO.md`.
 
+## 필요 패키지
+
+### Server — `bash bootstrap.sh` 가 자동 처리 (`server/backend/requirements.txt` 일괄 정의)
+
+- **API server** : FastAPI 0.115.0 / uvicorn[standard] 0.30.6 / python-multipart 0.0.9 / pydantic 2.9.2 / PyYAML 6.0.2.
+- **PDF 분할** : pypdfium2 4.30.0 (pure wheel + 내장 PDFium, poppler/시스템 바이너리 불요 → 폐쇄망·non-sudo 환경 적합).
+- **PyTorch (cu121 wheel, driver 535.288.01 호환)** : torch 2.5.1+cu121 / torchvision 0.20.1+cu121.
+- **ML stack (transformers 5.9.0 검증 환경)** : accelerate 1.13.0 / Pillow 10.3.0 / safetensors 0.7.0 / tokenizers 0.22.2 / huggingface_hub 1.16.1 / hf_transfer 0.1.9.
+- **DB CLI** : sqlite-utils 3.38.
+- **git tag 핀** : `transformers @ git+...@v5.9.0` — `qwen3_5` model_type 보유 + FSDP2 hard import 회귀 없는 stable tag. `bootstrap.sh` 가 멱등 처리.
+- **바이너리** : `cloudflared-linux-amd64` — 홈 영속, 1회 다운로드.
+- **모델 weight** : Qwen3.5-9B (~18 GiB) — `hf_transfer` 가속, 홈 영속.
+
+### Frontend — 수동 설치
+
+- **Node.js 18+** (npm 동봉) : Vite 5 / React 18 구동 요건. 가상환경(conda 등) 사용 시 환경 내부에 직접 설치해야 하며, 환경 전환 시 자동으로 따라오지 않는다 — 새 환경에서 `npm` 미인식은 Node.js 미설치를 의미.
+- **frontend 패키지** : `local/frontend/package.json` (Vite + React + `@vitejs/plugin-react`). 최초 1회 `cd local/frontend && npm install`.
+
 ## 레포 구조
 
 ```
 CD2_HWD_USW/
-├── local/frontend/         # 로컬 UI (Vite + React)
-└── server/                 # JupyterHub 서버 측 미러 (실서버는 ~/ 직하 배치)
-    ├── backend/            # FastAPI + cloudflared
-    ├── data/               # SQLite + 신청서별 페이지 이미지 (런타임 생성)
-    └── model/Qwen3.5-9B/   # VLM 파라미터 (실 weight 는 서버에만 존재)
+├── local/frontend/             # 로컬 UI (Vite + React)
+└── server/                     # JupyterHub 서버 측 미러 (실서버는 ~/ 직하 배치)
+    ├── backend/                # FastAPI + cloudflared
+    ├── data/                   # SQLite + 사전 적재 신청서 (관리자가 직접 채움)
+    │   ├── state.db            # 런타임 생성 — applications / jobs / field_results
+    │   ├── <template_name>/    # 카테고리 폴더 (= templates/<name>.yml 파일 stem)
+    │   │   └── *.pdf | *.png   # 신청서 파일 1개 = application 1건
+    │   └── original_data/      # 작업 탐색에서 제외되는 reserved 폴더 (원본 양식 등)
+    └── model/Qwen3.5-9B/       # VLM 파라미터 (실 weight 는 서버에만 존재)
 ```
 
 ## 구동 — 서버 (JupyterHub 터미널)
@@ -36,11 +58,20 @@ npm run dev          # http://localhost:5173
 
 ## 사용 흐름
 
-1. 상단 toolbar 에서 **Model / Device / Form Type** 선택.
-2. **Upload Images or PDFs** 로 신청서 등록 — 이미지 1장 또는 PDF 1개 = 신청서 1건. PDF 는 backend 가 페이지 PNG 로 자동 분할.
-3. **Analysis** 클릭 → 진행 중에는 **Stop** 으로 토글.
-4. **Application List** 에서 신청서 선택 → 다중 페이지면 **Image** 패널 아래 ◀ ▶ 로 페이지 이동 → **Application Summary** 에서 예측값 수정.
-5. **Complete** → 신청서가 `done` 으로 전환되고 **Preview** 시트에 1행 누적.
+신청서는 사용자가 업로드하지 않고 **서버에 미리 적재된다.** 관리자가 `server/data/<template_name>/` 폴더에 PDF / 이미지를 넣어두면, 작업자는 frontend 에서 카테고리를 골라 분석한다.
+
+1. **서버에 신청서 적재** (관리자) — `server/data/<template_name>/` 에 파일 배치. `<template_name>` 은 `server/backend/templates/<name>.yml` 의 파일 stem 과 동일해야 한다 (예: `direct_payment.yml` ↔ `server/data/direct_payment/`).
+2. 상단 toolbar 에서 **Model / Device** 선택. (옵션) **모델 로드** 버튼으로 가중치를 선제 적재 — 진행률(%) 이 버튼에 표시된다. 누르지 않아도 Analyze 시점에 자동 lazy load 가 동일 경로로 수행된다.
+3. **작업 선택** 버튼 클릭 → 하단 대시보드에 카테고리별 Sub Box 표시 (총 / 완료 / 미완료 / 작업률).
+4. Sub Box 클릭 → 그 카테고리의 신청서가 **Application List** 에 로드. 카테고리에 정의된 `field_spec` 이 자동 적용된다.
+5. **Analysis** 클릭 → 진행 중에는 **Stop** 으로 토글. 모델 미적재 상태에서 클릭 시 backend 가 자동으로 가중치를 적재한 뒤 추론을 시작한다 (적재 ~161s 동안 진행률 표시).
+6. **Application List** 에서 신청서 선택 → 다중 페이지(PDF) 면 **Image** 패널 아래 ◀ ▶ 로 페이지 이동 → **Application Summary** 에서 예측값 수정.
+7. **Complete** → 신청서가 `done` 으로 전환되고 **Preview** 시트에 1행 누적. 디스크의 원본은 그대로 유지.
+
+### 작업 탐색에서 제외되는 폴더
+
+- `server/data/original_data/` — 원본 신청서 양식 등 작업 대상이 아닌 자료 보관용. 카테고리 스캔에서 명시적으로 제외.
+- 그 외에도 `server/backend/templates/` 에 대응하는 yml 이 없는 폴더는 자연 제외된다.
 
 ## 모델 추가
 
@@ -111,13 +142,13 @@ python verify_qwen.py <image_path> [prompt]
 # 테이블 목록
 python -m sqlite_utils tables ~/data/state.db
 
-# 신청서 전체
+# 신청서 전체 (카테고리 포함)
 python -m sqlite_utils ~/data/state.db \
-  "SELECT application_id, filename, status, page_count FROM applications" --table
+  "SELECT application_id, template_name, filename, status, page_count FROM applications" --table
 
-# 특정 신청서의 페이지 경로
+# 특정 카테고리만
 python -m sqlite_utils ~/data/state.db \
-  "SELECT ord, path FROM application_pages WHERE application_id='app_xxx' ORDER BY ord" --table
+  "SELECT application_id, filename, status FROM applications WHERE template_name='direct_payment'" --table
 
 # 특정 신청서의 필드 결과
 python -m sqlite_utils ~/data/state.db \
@@ -132,29 +163,16 @@ python -m sqlite_utils ~/data/state.db \
 
 `~/.local/bin` 이 PATH 에 있으면 `sqlite-utils ~/data/state.db ...` 형태로도 호출 가능.
 
-## 필요 패키지
-
-`server/backend/requirements.txt` 에 일괄 정의. `bash bootstrap.sh` 가 다음을 자동 처리한다.
-
-- **API server** : FastAPI 0.115.0 / uvicorn[standard] 0.30.6 / python-multipart 0.0.9 / pydantic 2.9.2 / PyYAML 6.0.2.
-- **PDF 분할** : pypdfium2 4.30.0 (pure wheel + 내장 PDFium, poppler/시스템 바이너리 불요 → 폐쇄망·non-sudo 환경 적합).
-- **PyTorch (cu121 wheel, driver 535.288.01 호환)** : torch 2.5.1+cu121 / torchvision 0.20.1+cu121.
-- **ML stack (transformers 5.9.0 검증 환경)** : accelerate 1.13.0 / Pillow 10.3.0 / safetensors 0.7.0 / tokenizers 0.22.2 / huggingface_hub 1.16.1 / hf_transfer 0.1.9.
-- **DB CLI** : sqlite-utils 3.38.
-- **git tag 핀** : `transformers @ git+...@v5.9.0` — `qwen3_5` model_type 보유 + FSDP2 hard import 회귀 없는 stable tag. `bootstrap.sh` 가 멱등 처리.
-- **바이너리** : `cloudflared-linux-amd64` — 홈 영속, 1회 다운로드.
-- **모델 weight** : Qwen3.5-9B (~18 GiB) — `hf_transfer` 가속, 홈 영속.
-
-frontend 측은 `local/frontend/package.json` 의 Vite + React 의존성을 `npm install` 로 설치.
-
 ## 주의사항
 
 - **세션 재시작마다 `bootstrap.sh` 1회 실행** — JupyterHub 의 site-packages 는 휘발성이라 pip 의존성이 매 세션 사라진다 (홈 디렉토리만 영속).
 - **trycloudflare URL 은 재발급 시 바뀐다** — cloudflared 재시작 후에는 frontend `.env` 의 `VITE_BACKEND_URL` 을 새 URL 로 교체해야 backend 재접속이 된다.
-- **분석 첫 요청은 ~161s 지연** — 모듈 전역 lazy 캐시로 모델을 1회 적재. 두 번째 요청부터 ~8s/이미지.
+- **분석 첫 요청은 ~161s 지연** — 모듈 전역 lazy 캐시로 모델을 1회 적재. 두 번째 요청부터 ~8s/이미지. Load 버튼으로 선제 적재 가능하나 누르지 않아도 Analyze 가 동일 경로를 자동 트리거한다.
+- **backend 코드 수정 후 uvicorn 재기동 필수** — `bash run.sh` 가 `--reload` 미사용. 파일 교체만으로는 라우트가 갱신되지 않으니 `pkill -f uvicorn && bash run.sh` 로 프로세스 자체를 갈아야 한다 (`/openapi.json` 또는 `/docs` 의 라우트 목록으로 신·구 코드 식별 가능).
 - **단일 워커 가정** — `run.sh` 의 `--workers 1`. 멀티 워커 시 워커당 18 GiB VRAM 점유로 24 GiB GPU 한 장을 초과한다.
 - **CORS 가 `allow_origins=["*"]`** — 개발/시연 전용. 운영 시 origin 제한 필요.
 - **공개 URL 에 인증 없음** — Quick Tunnel 은 누구나 접근 가능하므로 민감 데이터 주의.
 - **Device 라디오는 현재 no-op** — 어댑터가 `device_map="auto"` 고정. TODO 참조.
 - **PDF 외 이미지 N장 그룹핑 UX 미구현** — 한 신청서가 여러 이미지 파일로 존재하는 경우는 현재 PDF 입력에서만 지원. TODO 참조.
-- **DB 스키마 변경 시 기존 `~/data/` 통째 삭제 필요** — `images` → `applications` 같은 비호환 전환에서는 backend 기동 전에 정리.
+- **DB 스키마 변경 시 기존 `~/data/state.db` 삭제 필요** — `images` → `applications` 같은 비호환 전환에서는 backend 기동 전에 정리. 신청서 폴더(`<template>/*.pdf`)는 보존.
+- **작업자는 파일 업로드 불가** — 신청서는 관리자가 `server/data/<template>/` 에 사전 적재한다. frontend 에 업로드 UI 가 없다.

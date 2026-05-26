@@ -52,15 +52,21 @@ CD2_HWD_USW/
 └── server/                       # 서버에서 작동할 모든 것
     ├── model/                    # model 파라미터는 서버에 저장되어 있으며, 로컬 환경에는 없다.
     │    └── Qwen3.5-9B/          # Qwen3.5-9B에 대한 필요 파일들이 저장되어 있다.
-    ├── data/                     # 업로드 이미지 + SQLite 상태 (런타임 생성, 서버 전용)
+    ├── data/                     # 사전 적재 신청서 + SQLite 상태
+    │   ├── state.db              # 런타임 생성 (applications/jobs/field_results 등)
+    │   ├── <template_name>/      # 카테고리 폴더 — 관리자가 직접 생성·채움
+    │   │   └── *.pdf | *.png     # 신청서 파일 1개 = application 1건
+    │   └── original_data/        # 스캔 제외 — 원본 양식 보관용 reserved 폴더
     └── backend/                  # FastAPI 백엔드
         ├── main.py               # FastAPI 앱 진입점 (라우터 정의)
         ├── db.py                 # SQLite 초기화 및 상태 저장
         ├── schemas.py            # Pydantic 모델/Enum 정의
         ├── model_registry.py     # 모델 어댑터 레지스트리 (predict 인터페이스)
         ├── templates_io.py       # templates/*.yml 디스크 로더 (매 요청 재스캔)
+        ├── categories.py         # data/<template>/ 스캔 + 인입 + 카테고리 통계
         ├── templates/            # 신청서 종류 정의 (yml 1개 = 1종류)
-        │   └── default.yml       # 기본 5필드
+        │   ├── default.yml       # 기본 5필드
+        │   └── direct_payment.yml # 직불금 신청서 14필드
         ├── verify_qwen.py        # Qwen3.5-9B GPU 단독 검증 스크립트
         ├── requirements.txt
         ├── bootstrap.sh          # 세션 1회 셋업 (멱등): pip --user, cloudflared 다운로드
@@ -75,24 +81,32 @@ CD2_HWD_USW/
 
 ## 3. local — frontend
 
-**frontend 는 사용자가 신청서를 업로드하고 모델 결과를 확인·수정하는 화면이다.**
+**frontend 는 작업자가 서버 사전 적재본 중에서 카테고리를 골라 작업하고 모델 결과를 확인·수정하는 화면이다.** 작업자는 파일을 업로드하지 않는다.
 
 레이아웃은 다음과 같다.
 
 ```
-	Model            Device          Upload Images or PDFs      Analysis and Stop Button
-┌──────────────┐ ┌──────────────┐ ┌───────────────────────┐ ┌───────────────────────┐
-|              | |              | |                       | | ┌──────────┐ ┌──────┐ |
-| Select Model | | CPU □  GPU □ | | Select Images or PDFs | | | Analysis | | Stop | |
-|              | |              | |                       | | └──────────┘ └──────┘ |
-└──────────────┘ └──────────────┘ └───────────────────────┘ └───────────────────────┘
-	Image List           Image                Image Summary                                                 
+	Model            Device                Work                 Analysis and Stop Button
+┌──────────────┐ ┌──────────────┐ ┌──────────────────────┐ ┌───────────────────────┐
+|              | |              | |                      | | ┌──────────┐ ┌──────┐ |
+| Select Model | | CPU □  GPU □ | | 작업 선택 (현재 카테고리) | | | Analysis | | Stop | |
+|              | |              | |                      | | └──────────┘ └──────┘ |
+└──────────────┘ └──────────────┘ └──────────────────────┘ └───────────────────────┘
+	Dashboard (작업 선택 클릭 시 표시)
+┌──────────────────────────────────────────────────────────────────────────────────────┐
+| ┌────────────────────────┐  ┌────────────────────────┐  ┌────────────────────────┐  |
+| | 직불금 신청서             |  | 주택신고서                |  | 기본 (5필드)             |  |
+| | 총 12 · 완료 3 · 미완료 9 |  | 총 0 · 완료 0 · 미완료 0  |  | 총 5 · 완료 5 · 미완료 0 |  |
+| | 작업률 25%               |  | 작업률 0%                |  | 작업률 100%             |  |
+| | [▓▓▓░░░░░░░░░░░░░░]    |  | [░░░░░░░░░░░░░░░░░░░░]  |  | [▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓]  |  |
+| └────────────────────────┘  └────────────────────────┘  └────────────────────────┘  |
+└──────────────────────────────────────────────────────────────────────────────────────┘
+	Application List      Image                Application Summary
 ┌───────────────────┐ ┌────────────────┐  ┌─────────────────────────────────────────────────────────────┐
-| Image 1 - Done    │ |                |  │ Full Name: [Predicted Answer] [Accuracy]                    |
-| Image 2 - Working │ | Working Image  |  | Account No. (Bank Name): [Predicted Answer] [Accuracy]      |
-| Image 3 -         │ | in Now         |  | Resident Registration Number: [Predicted Answer] [Accuracy] |
-| Image 4 -         │ |                |  | Address: [Predicted Answer] [Accuracy]                      |
-| ...               │ |                |  | Phone Number: [Predicted Answer] [Accuracy]                 |
+| App 1 - Done      │ |                |  │ Full Name: [Predicted Answer] [Accuracy]                    |
+| App 2 - Working   │ | Working Image  |  | Account No. (Bank Name): [Predicted Answer] [Accuracy]      |
+| App 3 -           │ | in Now         |  | Resident Registration Number: [Predicted Answer] [Accuracy] |
+| ...               │ |                |  | ...                                                         |
 └───────────────────┘ └────────────────┘  └─────────────────────────────────────────────────────────────┘
  Complete Button
 ┌──────────┐
@@ -108,23 +122,29 @@ CD2_HWD_USW/
 초기 화면 컨트롤은 다음과 같다.
 - **Model** : 사용 가능한 모델 중 택일 (`/models`).
 - **Device** : CPU / GPU 선택 (현재 실 라우팅은 GPU 고정 — 어댑터가 `device_map="auto"` 사용).
-- **Form Type** : 신청서 종류 (`templates/<name>.yml`) 선택 (`/templates`).
-- **Upload Images or PDFs** : 1 파일 = 신청서 1건 등록. PDF 는 backend 가 페이지 PNG 로 분할.
+- **작업 선택** : 클릭 시 하단 Dashboard 토글. 현재 카테고리가 있으면 버튼 라벨에 표시.
 - **Analysis / Stop** : 분석 시작 / 중지 (분석 중 토글).
 
+Dashboard 는 다음과 같다.
+- 카테고리(=template) 별 Sub Box. `server/data/<template>/` 폴더에 대응.
+- 각 Sub Box : 카테고리 label, 총 / 완료 / 미완료 건수, 작업률 (%) + 진행 막대.
+- 완료 판정은 backend DB 의 `applications.status='done'` 기준. 작업자가 Complete 한 신청서만 done.
+- Sub Box 클릭 → 해당 카테고리의 신청서들이 Application List 에 로드 + `template_name` 자동 설정. 카테고리가 바뀌면 진행 중이던 작업 상태(jobId / 시트 누적) 초기화.
+
 작업 진행 중 표시되는 영역은 다음과 같다.
-- **Application List** : 등록된 신청서 목록과 상태(Working / Done). 클릭으로 해당 신청서 작업 화면 전환, 이미 done 인 신청서의 기록은 그대로 표시된다.
+- **Application List** : 선택된 카테고리의 신청서 목록과 상태(Working / Done). 클릭으로 해당 신청서 작업 화면 전환, 이미 done 인 신청서의 기록은 그대로 표시된다.
 - **Image** : 선택된 신청서의 현재 페이지. 다중 페이지면 ◀ ▶ 네비 제공. 줌·팬·미니맵 지원.
 - **Application Summary** : 선택된 신청서의 예측값. 사용자 편집 가능.
 - **Complete** : 현재 신청서를 Done 처리하고 다음 신청서로 이동.
 - **Preview** : Done 처리된 신청서를 Excel 같은 시트 형태로 누적 표시.
 
 backend 와의 연결은 다음과 같다.
-- Upload → 신청서 등록 (이미지/PDF 모두 1 파일 = 1 application, PDF 는 서버에서 페이지 분할).
+- 작업 선택 → `/work-categories` 로 카테고리 통계 조회 (매 호출 시 디스크 재스캔).
+- 카테고리 선택 → `/applications?template_name=...` 로 해당 카테고리 신청서 목록 조회.
 - Analysis → 선택된 model / device / template + application_ids 로 분석 작업 시작.
 - Stop → 모든 작업 중지 신호 (진행 중이던 신청서의 비-done 결과는 폐기됨).
 - 폴링으로 작업 상태와 시트를 받아 화면 갱신.
-- 사용자 수정 / Complete 시 backend 에 저장 요청.
+- 사용자 수정 / Complete 시 backend 에 저장 요청. 디스크 원본 파일은 그대로 유지.
 
 ## 4. server — backend
 
@@ -144,10 +164,12 @@ get information from frontend → set environment → use model → transform mo
 
 ## 5. server — data
 
-**`~/data/` (local 미러 : `server/data/`) 는 SQLite 상태와 신청서 페이지 이미지 저장소다. backend 첫 기동 시 자동 생성된다.**
+**`~/data/` (local 미러 : `server/data/`) 는 사전 적재 신청서 + SQLite 상태 저장소다. 신청서 폴더는 관리자가 직접 생성·채우고, `state.db` 는 backend 첫 기동 시 자동 생성된다.**
 
-- `state.db` : applications / application_pages / jobs / job_applications / field_results 테이블.
-- `uploads/<application_id>/` : 신청서별 디렉토리. 그 안에 페이지 이미지(`0.png`, `1.png`, ...). PDF 업로드 시 원본 PDF 는 분할 후 폐기.
+- `state.db` : applications / jobs / job_applications / field_results 테이블.
+- `<template_name>/` : 카테고리(=신청서 종류) 폴더. 폴더명은 `server/backend/templates/<name>.yml` 의 파일 stem 과 동일. 안에는 PDF / 이미지가 평면으로 놓이며, 각 파일 = application 1건. 신청서 개수가 늘어나도 폴더는 카테고리 수만큼만 유지된다.
+- `original_data/` : 원본 양식 등 작업 대상이 아닌 자료. `categories._RESERVED_DIRS` 로 스캔에서 명시적 제외.
+- PDF 페이지는 디스크 캐시 없이 요청 시 `pypdfium2` 로 즉석 렌더링한다 (신청서당 폴더가 추가로 생기지 않는다).
 
 ## 6. server — model
 
@@ -234,16 +256,18 @@ app.add_middleware(
 
 ## 8. 다중 페이지 신청서
 
-**한 사람의 신청서는 여러 파일로 존재할 수 있다. 시스템은 이 파일들을 하나의 신청서로 취합하여 단일 결론을 산출해야 한다.**
+**한 사람의 신청서는 여러 페이지로 존재할 수 있다. 시스템은 그 페이지들을 하나의 신청서로 취합하여 단일 결론을 산출해야 한다.**
 
-현재 구현은 **PDF 입력만** 다중 페이지 신청서로 다룬다.
-- PDF 1개 업로드 = N페이지 신청서 1건 (백엔드가 `pypdfium2` 로 페이지별 PNG 분할).
-- 이미지 1개 업로드 = 1페이지 신청서 1건.
+현재 구현은 **PDF 1파일 = N페이지 신청서 1건** 형태만 다룬다.
+- PDF 파일 1개 (`server/data/<template>/foo.pdf`) = N페이지 신청서 1건. 페이지 수는 `pypdfium2.PdfDocument(...)` 로 인입 시점에 산출해 `applications.page_count` 에 기록.
+- 이미지 파일 1개 (`server/data/<template>/foo.png|jpg|jpeg`) = 1페이지 신청서 1건.
 - 모델은 신청서의 모든 페이지를 한 번의 `generate` 호출로 받아 단일 JSON 결과 산출.
+- `/applications/{aid}/pages/{ord}/file` 호출 시 PDF 는 즉석 렌더링, 이미지는 원본 직접 서빙.
+- `_run_job` 은 PDF 신청서를 `tempfile.TemporaryDirectory()` 에 페이지별 PNG 로 풀어 모델에 전달하고, predict 종료 시 자동 정리한다.
 
 향후 작업 — 여러 이미지 파일을 "하나의 신청서"로 그룹핑하는 UX (TODO 항목):
-- **추천 안 (Upload 1회 = 신청서 1건)** : 한 번의 Upload 다이얼로그에서 Ctrl/Shift 로 N개 이미지를 선택해 OK 누르면 그 N개가 하나의 신청서로 묶임. 새 신청서는 Upload 를 다시 누름. 백엔드 DB/모델은 이미 신청서 단위라 `/upload` 와 frontend 업로드 핸들러만 손보면 된다.
-- 대안 : "신청서 추가" 버튼으로 빈 컨테이너 생성 후 파일 드롭 (UI 복잡도 증가), 파일명 prefix 자동 그룹핑 (사용자 파일명 관리 의존, fragile).
+- 현재는 1 파일 = 1 신청서 라 다중 이미지(예: 휴대폰 카메라 N장)를 한 신청서로 묶을 방법이 없다.
+- 옵션 : 폴더 내 prefix 컨벤션(`홍길동_1.png`, `홍길동_2.png` 가 하나의 신청서) 또는 sub-sub-folder 허용(`server/data/<template>/<applicant>/*.png` 한 응답자 = 한 폴더). 후자는 "신청서 종류만큼만 폴더" 원칙과 절충 필요.
 
 ## 9. 개선점
 

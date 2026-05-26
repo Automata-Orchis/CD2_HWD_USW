@@ -36,9 +36,10 @@ class FieldResult(BaseModel):
 
 class ApplicationInfo(BaseModel):
     application_id: str
-    filename: str          # 사용자가 업로드한 원본 파일명(PDF 또는 이미지)
+    filename: str          # 원본 파일명(PDF 또는 이미지). server/data/<template>/ 안의 파일명.
     status: ImageStatus
-    page_count: int        # 1 이면 단일 이미지, >=2 이면 다중 페이지(PDF 분할 결과)
+    page_count: int        # 1 이면 단일 이미지, >=2 이면 다중 페이지(PDF 내부 페이지 수)
+    template_name: Optional[str] = None
 
 
 class ApplicationSummary(BaseModel):
@@ -93,3 +94,12 @@ class SheetRow(BaseModel):
 class Sheet(BaseModel):
     columns: list[SheetColumn]
     rows: list[SheetRow]
+
+
+class CategoryStat(BaseModel):
+    template_name: str          # = yml 파일 stem (예: "direct_payment")
+    label: str                  # yml.label (UI 표시명)
+    total: int
+    done: int
+    incomplete: int
+    rate: float                 # 0.0 ~ 1.0, total=0 이면 0.0
