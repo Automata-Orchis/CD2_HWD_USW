@@ -1,6 +1,7 @@
 # 
 server/data/test
 server/data/original_data
+server/data/direct_payment
 *.pptx
 
 # Byte-compiled / optimized / DLL files
