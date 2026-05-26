@@ -1,8 +1,11 @@
 """모델 어댑터 레지스트리.
 
-각 모델은 `predict(image_path, field_spec, fewshot) -> list[FieldResult]`를 구현하면 된다.
-fewshot 은 [{"user": str, "assistant": str}, ...] 형태(이미지 없는 텍스트 페어)이며,
-사용하지 않는 모델은 인자만 받고 무시한다.
+각 모델은 `predict(image_paths, field_spec, fewshot) -> list[FieldResult]`를 구현한다.
+- `image_paths` 는 하나의 신청서를 구성하는 페이지 이미지 리스트(길이 ≥ 1). 단일 이미지
+  신청서는 길이 1, PDF 분할 신청서는 길이 N. 모델은 N장 전체를 한 번에 보고 단일 결과를
+  산출해야 한다.
+- `fewshot` 은 [{"user": str, "assistant": str}, ...] 형태(이미지 없는 텍스트 페어).
+  사용하지 않는 모델은 인자만 받고 무시한다.
 """
 from __future__ import annotations
 
@@ -17,7 +20,7 @@ from schemas import FieldResult, FieldSpec
 
 
 def _mock_predict(
-    image_path: Path,
+    image_paths: list[Path],
     field_spec: list[FieldSpec],
     fewshot: list[dict],
 ) -> list[FieldResult]:
@@ -26,13 +29,14 @@ def _mock_predict(
         "text": ["홍길동", "김철수", "이영희", "박민수"],
         "number": ["010-1234-5678", "123-456-7890"],
     }
+    stem = image_paths[0].parent.name if image_paths else "?"
     out: list[FieldResult] = []
     for spec in field_spec:
         bag = samples.get(spec.type, samples["text"])
         out.append(
             FieldResult(
                 key=spec.key,
-                predicted=f"[mock:{image_path.stem}] {random.choice(bag)}",
+                predicted=f"[mock:{stem}/{len(image_paths)}p] {random.choice(bag)}",
                 accuracy=round(random.uniform(0.6, 0.99), 2),
                 edited=None,
             )
@@ -70,8 +74,15 @@ def _qwen_get():
     return _qwen_processor, _qwen_model
 
 
-def _qwen_build_prompt(field_spec: list[FieldSpec]) -> str:
-    lines = ["이 이미지에서 다음 항목들을 읽어 JSON 객체로만 답하라.", "", "항목:"]
+def _qwen_build_prompt(field_spec: list[FieldSpec], n_pages: int) -> str:
+    if n_pages > 1:
+        head = [
+            f"이 신청서는 {n_pages}장의 페이지로 구성되어 있다. "
+            "주어진 모든 페이지의 내용을 종합해서 다음 항목들을 읽어 JSON 객체로만 답하라.",
+        ]
+    else:
+        head = ["이 이미지에서 다음 항목들을 읽어 JSON 객체로만 답하라."]
+    lines = head + ["", "항목:"]
     for s in field_spec:
         lines.append(f'- "{s.key}": {s.label}')
     lines += [
@@ -80,6 +91,7 @@ def _qwen_build_prompt(field_spec: list[FieldSpec]) -> str:
         "1. 출력은 반드시 JSON 객체 한 개. 그 외 텍스트나 코드 블록 금지.",
         "2. 키는 위 영문 그대로 사용.",
         '3. 값을 읽을 수 없으면 빈 문자열 "".',
+        "4. 같은 항목이 여러 페이지에 나타나면 가장 명확히 적힌 값을 사용한다.",
     ]
     return "\n".join(lines)
 
@@ -108,35 +120,36 @@ def _qwen_parse(text: str, field_spec: list[FieldSpec]) -> dict[str, str | None]
 
 
 def _qwen_predict(
-    image_path: Path,
+    image_paths: list[Path],
     field_spec: list[FieldSpec],
     fewshot: list[dict],
 ) -> list[FieldResult]:
     import torch
     from PIL import Image
 
+    if not image_paths:
+        return [FieldResult(key=s.key, predicted=None, accuracy=None, edited=None) for s in field_spec]
+
     processor, model = _qwen_get()
-    image = Image.open(image_path).convert("RGB")
+    images = [Image.open(p).convert("RGB") for p in image_paths]
+
     # fewshot 은 이미지 없는 텍스트 user/assistant 페어. 실제 분석 대상 이미지 메시지 앞에
     # 그대로 끼워 넣어 출력 형식을 시연한다 (verify_qwen.py 의 messages[1~4] 와 동일 구조).
     messages: list[dict] = []
     for pair in fewshot:
         messages.append({"role": "user", "content": pair["user"]})
         messages.append({"role": "assistant", "content": pair["assistant"]})
-    messages.append(
-        {
-            "role": "user",
-            "content": [
-                {"type": "image"},
-                {"type": "text", "text": _qwen_build_prompt(field_spec)},
-            ],
-        }
-    )
+
+    # 다중 페이지: image content 블록을 페이지 수만큼 앞에 두고 텍스트 프롬프트는 1개.
+    content: list[dict] = [{"type": "image"} for _ in images]
+    content.append({"type": "text", "text": _qwen_build_prompt(field_spec, len(images))})
+    messages.append({"role": "user", "content": content})
+
     text = processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True,
         enable_thinking=False,
     )
-    inputs = processor(text=[text], images=[image], return_tensors="pt", padding=True).to(model.device)
+    inputs = processor(text=[text], images=images, return_tensors="pt", padding=True).to(model.device)
     with torch.inference_mode():
         out = model.generate(**inputs, max_new_tokens=512, do_sample=False)
     new_tokens = out[:, inputs.input_ids.shape[1] :]
@@ -148,7 +161,7 @@ def _qwen_predict(
     ]
 
 
-_REGISTRY: dict[str, Callable[[Path, list[FieldSpec], list[dict]], list[FieldResult]]] = {
+_REGISTRY: dict[str, Callable[[list[Path], list[FieldSpec], list[dict]], list[FieldResult]]] = {
     "Mock-Model": _mock_predict,
     "Qwen3.5-9B": _qwen_predict,
 }
@@ -160,10 +173,10 @@ def available_models() -> list[str]:
 
 def predict(
     model_name: str,
-    image_path: Path,
+    image_paths: list[Path],
     field_spec: list[FieldSpec],
     fewshot: list[dict],
 ) -> list[FieldResult]:
     if model_name not in _REGISTRY:
         raise KeyError(f"unknown model: {model_name}")
-    return _REGISTRY[model_name](image_path, field_spec, fewshot)
+    return _REGISTRY[model_name](image_paths, field_spec, fewshot)

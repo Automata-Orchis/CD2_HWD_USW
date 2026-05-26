@@ -5,6 +5,10 @@ python-multipart==0.0.9
 pydantic==2.9.2
 PyYAML==6.0.2
 
+# --- PDF → 페이지별 PNG 분할 (다중 페이지 신청서) ---
+# pure wheel + 내장 PDFium, poppler 등 시스템 바이너리 의존 없음 → 폐쇄망/non-sudo 환경에 적합.
+pypdfium2==4.30.0
+
 # --- PyTorch (cu121 wheels — driver 535.288.01 / CUDA 12.x 호환) ---
 --extra-index-url https://download.pytorch.org/whl/cu121
 torch==2.5.1+cu121

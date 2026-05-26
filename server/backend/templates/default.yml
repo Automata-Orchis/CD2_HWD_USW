@@ -1,4 +1,10 @@
-name: default
+# name: template의 식별자이다. 즉, template 별로 고유해야 한다. 
+#       추가적으로 파일명과 name이 동일할 필요는 없다. 
+#       단, 고유성을 유지하고 혼란을 줄이기 위해 파일명과 동일하게 하는 것을 추천한다. 
+# field_spec
+#           type: 사실상 아무런 곳에도 활용되지 않는다. 
+
+name: default 
 label: 테스트_1
 
 field_spec:

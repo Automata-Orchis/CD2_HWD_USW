@@ -8,6 +8,7 @@ class Device(str, Enum):
     gpu = "gpu"
 
 
+# 한 신청서(application) 의 작업 상태. 코드 호환을 위해 이름은 ImageStatus 그대로 둔다.
 class ImageStatus(str, Enum):
     blank = "blank"
     working = "working"
@@ -33,15 +34,17 @@ class FieldResult(BaseModel):
     edited: Optional[str] = None
 
 
-class ImageInfo(BaseModel):
-    image_id: str
-    filename: str
+class ApplicationInfo(BaseModel):
+    application_id: str
+    filename: str          # 사용자가 업로드한 원본 파일명(PDF 또는 이미지)
     status: ImageStatus
+    page_count: int        # 1 이면 단일 이미지, >=2 이면 다중 페이지(PDF 분할 결과)
 
 
-class ImageSummary(BaseModel):
-    image_id: str
+class ApplicationSummary(BaseModel):
+    application_id: str
     status: ImageStatus
+    page_count: int
     fields: list[FieldResult]
 
 
@@ -51,7 +54,7 @@ class Job(BaseModel):
     device: Device
     status: JobStatus
     field_spec: list[FieldSpec]
-    images: list[ImageInfo]
+    applications: list[ApplicationInfo]
 
 
 class FewshotPair(BaseModel):
@@ -67,7 +70,7 @@ class Template(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
-    image_ids: list[str]
+    application_ids: list[str]
     model: str
     device: Device
     template_name: str
@@ -83,7 +86,7 @@ class SheetColumn(BaseModel):
 
 
 class SheetRow(BaseModel):
-    image_id: str
+    application_id: str
     values: dict[str, Optional[str]]
 
 

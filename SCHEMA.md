@@ -5,6 +5,14 @@
 
 > PLAN.md §3의 5개 필드(성명·계좌·주민번호·주소·전화)는 예시이며, 실제 추출 항목은 문서 종류에 따라 달라진다. 따라서 필드 집합은 하드코딩하지 않고 신청서 종류별 **Template**(서버 측 `server/backend/templates/<name>.yml`)에 정의한다. 분석 요청 시 frontend 는 선택된 `template_name` 만 보내며 backend 가 그 template 의 `field_spec` 과 `fewshot` 을 읽어 적용한다.
 
+## 0. 작업 단위 — Application
+
+작업·추론·저장의 단위는 **신청서(application)** 다. 한 신청서는 1장의 이미지 또는 N장의 페이지 이미지로 구성된다.
+
+- **이미지 파일 1개 업로드** → 1장짜리 신청서 1건
+- **PDF 파일 1개 업로드** → 백엔드가 페이지별 PNG 로 분할하여 N장짜리 신청서 1건
+- 같은 신청서에 속한 페이지들은 모델에게 한 번에 전달되어 **단일 ApplicationSummary** (한 명·한 신청서의 결론) 가 산출된다.
+
 ## 1. 열거형 (Enums)
 
 | 이름 | 값 |
@@ -41,25 +49,30 @@
 - `accuracy` : `0.0 ~ 1.0`. 모델이 신뢰도를 제공하지 않으면 `null`
 - `edited` : 사용자가 수정한 값. 미수정 시 `null`. 최종 저장값은 `edited ?? predicted`
 
-### 2.3 ImageInfo
+### 2.3 ApplicationInfo
 
 ```json
 {
-  "image_id": "img_001",
-  "filename": "001.jpg",
-  "status": "working"
+  "application_id": "app_001",
+  "filename": "홍길동.pdf",
+  "status": "working",
+  "page_count": 8
 }
 ```
+- `filename` : 사용자가 업로드한 원본 파일명 (PDF 또는 이미지)
+- `page_count` : 1 이면 단일 이미지 신청서, ≥2 이면 PDF 분할 다중 페이지 신청서
 
-### 2.4 ImageSummary
+### 2.4 ApplicationSummary
 
 ```json
 {
-  "image_id": "img_001",
+  "application_id": "app_001",
   "status": "done",
+  "page_count": 8,
   "fields": [ /* FieldResult, ... */ ]
 }
 ```
+- 한 신청서의 모든 페이지를 종합한 단일 결론. `fields` 는 신청서 1건당 1세트.
 
 ### 2.5 Job
 
@@ -70,7 +83,7 @@
   "device": "gpu",
   "status": "running",
   "field_spec": [ /* FieldSpec, ... */ ],
-  "images": [ /* ImageInfo, ... */ ]
+  "applications": [ /* ApplicationInfo, ... */ ]
 }
 ```
 
@@ -106,17 +119,26 @@
 | `GET` | `/devices` | `{"devices": ["cpu", "gpu"]}` |
 | `GET` | `/templates` | `{"templates": [ /* Template, ... */ ]}` |
 
-### 3.2 이미지 업로드
+### 3.2 신청서 업로드
 
 `POST /upload` — `multipart/form-data`, 필드명 `files[]`
-→ `{"images": [ /* ImageInfo, ... */ ]}`
+→ `{"applications": [ /* ApplicationInfo, ... */ ]}`
 
-### 3.3 분석 시작
+업로드된 각 파일은 **신청서 1건**으로 등록된다.
+- 이미지(jpg/png 등) → 페이지 1장
+- PDF → 백엔드가 페이지별 PNG 로 분할하여 페이지 N장. 분할 후 원본 PDF 는 폐기.
+
+### 3.3 페이지 파일 조회
+
+`GET /applications/{application_id}/pages/{ord}/file`
+→ 해당 페이지 이미지 파일 (PNG 또는 원본 이미지 확장자). `ord` 는 0-based.
+
+### 3.4 분석 시작
 
 `POST /analyze`
 ```json
 {
-  "image_ids": ["img_001", "img_002"],
+  "application_ids": ["app_001", "app_002"],
   "model": "Qwen3.5-9B",
   "device": "gpu",
   "template_name": "default"
@@ -124,43 +146,43 @@
 ```
 → `{"job_id": "job_abc"}`
 
-`template_name` 으로 지정한 Template 의 `field_spec` 과 `fewshot` 이 자동 적용된다.
+`template_name` 으로 지정한 Template 의 `field_spec` 과 `fewshot` 이 자동 적용된다. 모델은 각 신청서의 모든 페이지를 한 번에 보고 단일 결과를 산출한다.
 
-### 3.4 분석 정지
+### 3.5 분석 정지
 
 `POST /jobs/{job_id}/stop` → `{"status": "stopped"}`
-정지 시점까지 완료된 이미지의 결과는 보존된다.
+정지 시점까지 완료된 신청서의 결과는 보존된다.
 
-### 3.5 작업 상태 조회
+### 3.6 작업 상태 조회
 
 `GET /jobs/{job_id}` → `Job`
 프론트엔드는 짧은 간격으로 폴링한다. 추후 WebSocket `/jobs/{job_id}/stream`으로 대체 가능.
 
-### 3.6 이미지 결과 조회
+### 3.7 신청서 결과 조회
 
-`GET /jobs/{job_id}/images/{image_id}` → `ImageSummary`
+`GET /jobs/{job_id}/applications/{application_id}` → `ApplicationSummary`
 
-### 3.7 사용자 수정 저장
+### 3.8 사용자 수정 저장
 
-`PUT /jobs/{job_id}/images/{image_id}`
+`PUT /jobs/{job_id}/applications/{application_id}`
 ```json
 { "fields": [ /* FieldResult, ... */ ] }
 ```
-→ `ImageSummary` (서버 반영본)
+→ `ApplicationSummary` (서버 반영본)
 
-### 3.8 이미지 완료 처리
+### 3.9 신청서 완료 처리
 
-`POST /jobs/{job_id}/images/{image_id}/complete` → `ImageSummary` (`status: "done"`)
+`POST /jobs/{job_id}/applications/{application_id}/complete` → `ApplicationSummary` (`status: "done"`)
 
-### 3.9 시트 미리보기 / 내보내기
+### 3.10 시트 미리보기 / 내보내기
 
 `GET /jobs/{job_id}/sheet`
-→ 행 = 이미지, 열 = `field_spec` 순서. 값은 `edited ?? predicted`.
+→ 행 = 신청서, 열 = `field_spec` 순서. 값은 `edited ?? predicted`.
 ```json
 {
   "columns": [{"key": "full_name", "label": "성명"}, ...],
   "rows": [
-    {"image_id": "img_001", "values": {"full_name": "홍길동", ...}}
+    {"application_id": "app_001", "values": {"full_name": "홍길동", ...}}
   ]
 }
 ```
@@ -180,3 +202,4 @@
 - DB 스키마 (PLAN.md §1의 "Database에 저장" 요구사항)
 - 다중 작업자 동시 편집 시 충돌 처리
 - 이미지 파일 크기·형식 제한
+- 여러 이미지 파일을 하나의 신청서로 묶는 그룹핑 UI (현재는 PDF 입력에만 한정)

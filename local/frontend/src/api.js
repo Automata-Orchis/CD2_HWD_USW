@@ -25,11 +25,11 @@ export const api = {
   }),
   stop: (jobId) => j(`/jobs/${jobId}/stop`, { method: 'POST' }),
   getJob: (jobId) => j(`/jobs/${jobId}`),
-  getSummary: (jobId, imageId) => j(`/jobs/${jobId}/images/${imageId}`),
-  putSummary: (jobId, imageId, fields) => j(`/jobs/${jobId}/images/${imageId}`, {
+  getSummary: (jobId, appId) => j(`/jobs/${jobId}/applications/${appId}`),
+  putSummary: (jobId, appId, fields) => j(`/jobs/${jobId}/applications/${appId}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fields })
   }),
-  complete: (jobId, imageId) => j(`/jobs/${jobId}/images/${imageId}/complete`, { method: 'POST' }),
+  complete: (jobId, appId) => j(`/jobs/${jobId}/applications/${appId}/complete`, { method: 'POST' }),
   getSheet: (jobId) => j(`/jobs/${jobId}/sheet`),
-  imageUrl: (imageId) => `${BASE}/images/${imageId}/file`,
+  pageUrl: (appId, ord) => `${BASE}/applications/${appId}/pages/${ord}/file`,
 }

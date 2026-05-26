@@ -13,11 +13,19 @@ def init() -> None:
     with connect() as cx:
         cx.executescript(
             """
-            CREATE TABLE IF NOT EXISTS images (
-                image_id TEXT PRIMARY KEY,
-                filename TEXT NOT NULL,
-                path     TEXT NOT NULL,
-                status   TEXT NOT NULL DEFAULT 'blank'
+            CREATE TABLE IF NOT EXISTS applications (
+                application_id TEXT PRIMARY KEY,
+                filename       TEXT NOT NULL,
+                status         TEXT NOT NULL DEFAULT 'blank',
+                page_count     INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS application_pages (
+                application_id TEXT NOT NULL,
+                ord            INTEGER NOT NULL,
+                path           TEXT NOT NULL,
+                PRIMARY KEY (application_id, ord),
+                FOREIGN KEY (application_id) REFERENCES applications(application_id)
             );
 
             CREATE TABLE IF NOT EXISTS jobs (
@@ -28,23 +36,23 @@ def init() -> None:
                 field_spec TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS job_images (
-                job_id   TEXT NOT NULL,
-                image_id TEXT NOT NULL,
-                ord      INTEGER NOT NULL,
-                PRIMARY KEY (job_id, image_id),
+            CREATE TABLE IF NOT EXISTS job_applications (
+                job_id         TEXT NOT NULL,
+                application_id TEXT NOT NULL,
+                ord            INTEGER NOT NULL,
+                PRIMARY KEY (job_id, application_id),
                 FOREIGN KEY (job_id) REFERENCES jobs(job_id),
-                FOREIGN KEY (image_id) REFERENCES images(image_id)
+                FOREIGN KEY (application_id) REFERENCES applications(application_id)
             );
 
             CREATE TABLE IF NOT EXISTS field_results (
-                job_id    TEXT NOT NULL,
-                image_id  TEXT NOT NULL,
-                key       TEXT NOT NULL,
-                predicted TEXT,
-                accuracy  REAL,
-                edited    TEXT,
-                PRIMARY KEY (job_id, image_id, key)
+                job_id         TEXT NOT NULL,
+                application_id TEXT NOT NULL,
+                key            TEXT NOT NULL,
+                predicted      TEXT,
+                accuracy       REAL,
+                edited         TEXT,
+                PRIMARY KEY (job_id, application_id, key)
             );
             """
         )

@@ -2,64 +2,54 @@
 
 ## 2026-05-20
 
-- 공통 I/O 스키마 정의 시작점으로 채택. PLAN.md §2의 "뼈대" 요구사항과 §4의 "모델 출력 통일" 요구사항을 충족하기 위해 frontend/backend/model이 공유할 데이터 계약을 먼저 확정.
-- `SCHEMA.md` 작성. FastAPI 기반 HTTP/JSON 계약. 추출 필드는 `field_spec`으로 분석 요청 시 가변 명세 (PLAN.md의 5개 필드는 하드코딩하지 않음).
-- 시연용 골격 추가. `server/backend/` (FastAPI + SQLite + Mock 모델 + cloudflared `run.sh`) 와 `local/frontend/` (Vite + React, SCHEMA.md 의 모든 엔드포인트와 1:1 wiring) 작성. 실제 VLM 호출은 `model_registry.py` 의 `_REGISTRY` 에 어댑터를 추가하는 방식으로 후속 작업.
-- 서버 배치 가정 정정 — `server/` prefix 는 로컬 분리용으로만 취급, 서버에서는 `~/backend`, `~/data`, `~/model` 직하 배치로 README/문서 일치화.
-- `.gitattributes` 신설(`*.sh text eol=lf`) + `bootstrap.sh`/`run.sh` 를 LF 로 변환해 Linux 실행 시 `\r` 파싱 오류 제거.
-- `run.sh` 의 uvicorn 호출을 `python -m uvicorn` 으로 교체해 `~/.local/bin` PATH 누락 환경에서도 동작.
-- Preview Sheet 가로 오버플로 처리 — `.preview { overflow-x: auto }`.
-- ImageSummary 입력을 컴포넌트 로컬 draft state 로 전환, 서버 PUT 은 Complete 1회로 통합 — 커서 튐과 한글 IME 끊김 해소.
-- Image Summary 필드 렌더 순서를 `job.field_spec` 기준으로 정렬해 Preview 컬럼 순서와 일치.
-- PDF 업로드 미리보기에 `<embed type="application/pdf">` 적용.
-- Image List 의 `blank` 표기를 `working` 으로 정규화 — BLANK 상태는 사용자 노출에서 제거.
-- `Analyze` 가 `done` 이 아닌 image_id 만 전송 — 신규 이미지 추가 후 재분석해도 기존 done 보존.
-- Preview Sheet 행을 `image_id` 키로 frontend 에서 누적 — 새 job 시작 시에도 이전 done 행 유지.
+- **SCHEMA.md 작성** — FastAPI HTTP/JSON 계약 정의, 추출 필드는 `field_spec` 가변 명세 (PLAN.md 의 5필드는 하드코딩하지 않음).
+- **시연 골격 도입** — `server/backend/` (FastAPI + SQLite + Mock 모델 + cloudflared `run.sh`) + `local/frontend/` (Vite + React) 가 SCHEMA 의 모든 엔드포인트와 1:1 wiring.
+- **서버 배치 가정 정정** — `server/` prefix 는 로컬 분리 전용으로 취급, 실서버는 `~/backend`/`~/data`/`~/model` 직하 배치로 README/문서 일치.
+- **shell 라인엔딩 호환** — `.gitattributes` (`*.sh text eol=lf`) + 기존 sh 파일 LF 변환으로 Linux 실행 시 `\r` 파싱 오류 제거.
+- **uvicorn 호출 호환** — `python -m uvicorn` 으로 교체해 `~/.local/bin` PATH 누락 환경에서도 동작.
+- **ImageSummary 입력 안정화** — 컴포넌트 로컬 draft state + PUT 은 Complete 1회로 통합, 커서 튐과 한글 IME composition 끊김 해소.
+- **Image Summary 필드 순서 정렬** — `job.field_spec` 기준으로 정렬해 Preview 컬럼 순서와 일치.
+- **PDF 업로드 미리보기 도입** — `<embed type="application/pdf">` (이후 2026-05-25~26 의 다중 페이지 도입으로 PDF embed 제거됨).
+- **Image List blank 표기 정규화** — 사용자 노출 status 를 working/done 으로 제한.
+- **재분석 시 done 보존** — `Analyze` 가 done 이 아닌 image_id 만 전송 + frontend `accumulatedRows` 로 시트 행 누적해 새 job 시작 시에도 이전 done 유지.
 
 ## 2026-05-21
 
-- PDF 미리보기의 Chromium PDF viewer 상단 toolbar 숨김 — `<embed src="...#toolbar=0&navpanes=0">`.
-- Image Summary 행 라벨을 `field_spec.label` 기준 Title Case 로 표기.
-- Preview 패널 세로 스크롤 부여 — `max-height: 360px; overflow: auto`.
-- Device 옵션 가로 배치 — `.device label { display: inline-flex }` + 인접 형제 `margin-left`.
-- Stop 시 비-`done` 이미지 결과 폐기 — `_run_job` 종료 블록에서 `field_results` 삭제 + `status='blank'` 처리.
-- Toolbar 컨트롤 4종 높이 통일 — `height: 32px` + `.toolbar { align-items: end }`.
-- Preview 시트 6행 초과 시 세로 스크롤 — `<table>` 을 `.sheet-scroll`(max-height 189px) 로 감싸고 thead sticky.
-- 재분석 시 done 이미지 상태 보존 — `imagesForList` status 에 `accumulatedRows` 함께 반영, `doneSummariesRef` 로 ImageSummary 폴백.
-- Device 박스 정렬 — `<fieldset>/<legend>` (legend 가 border 와 겹쳐 캡션 라인이 비는 구조) 를 `<div className="device-field">캡션 + <div className="device">` 2단 구조로 교체. 다른 셀과 동일한 캡션-컨트롤 레이아웃 + border 스타일 통일.
-- Preview · Sheet 제목을 `.preview` 박스 바깥(위)으로 이동 — 박스 안쪽 상단의 과한 공백 제거.
-- Toolbar 캡션 텍스트를 `<span className="cap">` 으로 감싸 `padding-left: 4px` 적용 — Model/Device/Upload Images 글자를 박스 좌측 끝에서 살짝 안쪽으로 들여 정렬.
-- 헤더/캡션 들여쓰기 통일 — h1(Title), h2(Preview · Sheet), `.toolbar .cap`(Model/Device/Upload Images) 모두 `padding-left: 10px` 로 통일.
-- Image 미리보기 줌·팬 추가 — `.zoom-stage` 래퍼에 native wheel 리스너(passive 회피)로 1~8× 줌, 줌 상태에서 마우스 드래그로 팬, 더블클릭 시 1× 리셋, 이미지 전환 시 자동 리셋.
-- Image 팬 경계 클램프 — `clampPan` 으로 한 축당 `max(0, (img.offsetDim*zoom - stage.offsetDim)/2)` 안으로 제한, 드래그 onMove 와 zoom 변화 useEffect 양쪽에 적용.
-- Image 확대 시 우하단 반투명 미니맵 — `.zoom-stage` 우하단에 이미지 종횡비 기반 ≤100px 박스, 내부 viewport 사각형의 위치/크기를 `fracW/H = min(1, stageDim/(imgDim*zoom))` 및 `c = 0.5 − pan/(imgDim*zoom)` 으로 계산. 줌 > 1 일 때만 표시, `pointer-events: none`.
-- `local/` 루트의 임시 산출물 4종(`chat_share.html`, `enqueue_0.txt`, `enqueue_decoded.txt`, `enqueue_main.txt`) 제거 — PLAN §6 본문 추출용 ChatGPT 공유 페이지 덤프, 본문 정리 완료로 보존 가치 소실.
-- PLAN.md §2 트리를 실제 구조에 맞춰 갱신 — 루트명 `project_gamma` → `CD2_HWD_USW`, `SCHEMA.md`/`TODO.md`/`.gitattributes` 추가, `local/frontend/` Vite+React 골격과 `server/backend/` 구현 파일들에 한 줄 설명 부여. `server/model·data/` 는 서버 전용 디렉토리로 트리에 유지.
+- **PDF 미리보기 toolbar 제거** — `<embed src="...#toolbar=0&navpanes=0">` 로 Chromium PDF viewer 상단 toolbar 숨김.
+- **Stop 시 비-done 결과 폐기** — `_run_job` 종료 블록에서 `field_results` 삭제 + `status='blank'` 처리. Stop = 진행 중 추론 결과는 신뢰하지 않는다는 의미.
+- **재분석 done 상태 보존** — `imagesForList` status 에 `accumulatedRows` 반영 + `doneSummariesRef` 로 빈 fields 폴백 (새 job 이 이전 job_id 의 결과를 모르는 케이스 대응).
+- **Toolbar / Preview / Device 정렬 마무리** — 컨트롤 4종 높이 32px 통일, Device 박스를 `<fieldset>/<legend>` 에서 `<div className="device-field">` 2단 구조로 교체 (캡션 라인 비는 문제 해소), Preview·Sheet 제목을 박스 바깥 위로 이동, Preview 6행 초과 시 thead sticky 세로 스크롤, h1/h2/`.toolbar .cap` 들여쓰기 10px 통일.
+- **Image 줌·팬·미니맵 도입** — `.zoom-stage` 에 native wheel(passive 회피) 1~8× 줌, 드래그 팬, 더블클릭 1× 리셋, 이미지 전환 자동 리셋, `clampPan` 으로 한 축당 `max(0, (img.offsetDim*zoom - stage.offsetDim)/2)` 경계 클램프, 우하단 ≤100px 미니맵 (줌>1 일 때만 표시, `pointer-events: none`).
+- **임시 산출물 제거** — `local/` 루트의 `chat_share.html` / `enqueue_*.txt` 4종 (PLAN §6 본문 추출용 ChatGPT 공유 페이지 덤프) 삭제.
+- **PLAN.md §2 트리 갱신** — 루트명 `CD2_HWD_USW` 반영, SCHEMA/TODO/.gitattributes 추가, `local/frontend/` Vite+React 골격과 `server/backend/` 구현 파일들에 한 줄 설명 부여.
 
 ## 2026-05-22~24
 
-- `server/backend/verify_qwen.py` 작성 — Qwen3.5-9B GPU 적재 + 멀티모달 추론 단독 검증 (processor / bf16 적재 / chat template / generate 4단계 분리).
-- torchvision 0.19.1+cu121 로 ABI 정합 — stable transformers 4.57.6 적재 시 conda torchvision 0.18.0 ↔ user-site torch 2.4.1 의 `torchvision::nms` 누락 해결.
-- stable 4.57.6 의 `qwen3_5` model_type 미인식 확정 (4.57.x 가 `qwen3_vl` 로 rename) — HF 모델 카드가 "transformers main 필요" 명시.
-- `transformers @main` (5.8.0.dev0) 설치 → `ParallelStyle` NameError → torch 2.5.1+cu121 + torchvision 0.20.1+cu121 업그레이드 (`--timeout 600 --retries 5` 로 PyTorch CDN read timeout 우회), AutoConfig 통과.
-- 같은 dev 빌드에서 `CPUOffloadPolicy` ImportError (torch≥2.6 FSDP2 hard import) — driver 535.288.01 은 CUDA 12.4 wheel 미수용으로 torch 추가 업그레이드 차단, main 두더지 잡기 종료.
-- transformers v5.x stable tag 매핑 (curl HEAD) → v5.2.0 부터 `qwen3_5`, v5.9.0 까지 FSDP2 hard import 부재 → **`transformers @ v5.9.0` 핀** (`--force-reinstall --no-deps`), AutoConfig + AutoProcessor 통과.
-- 모델 weight 4 shard 손상 발견 (declared 19.3 GiB 대비 실제 1.18 GiB) — `huggingface_hub.snapshot_download(allow_patterns=['*.safetensors'])` + `hf_transfer` Rust 가속으로 재다운, 무결성 + 총합 일치 확인.
-- verify_qwen.py 실측 통과 — bf16 17.53 GiB / 32.5 tok/s / 한국어 손글씨(시편 23편) 인식.
-- `model_registry.py` 에 `_qwen_predict` 어댑터 작성 + `_REGISTRY` 에 `"Qwen3.5-9B"` 등록 — 모듈 전역 lazy 캐시 + JSON 강제 프롬프트 + 코드 펜스 제거 파서 + 단일 generate. 첫 호출 ~161s 적재, 이후 ~8s/이미지.
-- README.md 갱신 — "VLM 환경 준비" 섹션 신설 + "서버 환경" 라인을 최종 검증 환경(transformers 5.9.0 / torch 2.5.1+cu121 / torchvision 0.20.1+cu121 / hf_transfer 0.1.9 등) 으로 교체.
-- 세션 영속화 자동화 — `requirements.txt` 에 cu121 torch wheel 핀 + ML stack 추가, `bootstrap.sh` 가 transformers `@v5.9.0` git pin (멱등 skip) + 모델 weight 부재 시 `snapshot_download` 까지 처리하도록 확장. 매 세션 `bash bootstrap.sh` 한 줄로 전 환경 복원 가능.
+- **verify_qwen.py 작성** — Qwen3.5-9B GPU 적재 + 멀티모달 추론 단독 검증 (processor / bf16 적재 / chat template / generate 4단계 분리).
+- **transformers v5.9.0 핀 확정** — 4.57.6 의 `qwen3_5` 미인식, main 빌드의 `ParallelStyle` NameError, 같은 dev 빌드의 `CPUOffloadPolicy` ImportError(torch≥2.6 FSDP2 hard import), driver 535.288.01 의 CUDA 12.4 wheel 미수용을 차례로 검증 후 v5.9.0 이 qwen3_5 보유 + FSDP2 hard import 회귀 없는 stable tag 임을 확인하여 `--force-reinstall --no-deps` 로 고정.
+- **torchvision 0.20.1+cu121 정합** — `torchvision::nms` 누락 해소 + torch 2.5.1+cu121 정합 (`--timeout 600 --retries 5` 로 PyTorch CDN read timeout 우회).
+- **모델 weight 재다운** — 4 shard 손상(declared 19.3 GiB vs 실제 1.18 GiB) 발견, `huggingface_hub.snapshot_download(allow_patterns=['*.safetensors'])` + `hf_transfer` Rust 가속으로 무결성+총합 일치 복원.
+- **verify_qwen 실측 통과** — bf16 17.53 GiB / 32.5 tok/s / 한국어 손글씨(시편 23편) 인식 확인.
+- **`_qwen_predict` 어댑터 도입** — `_REGISTRY` 에 `"Qwen3.5-9B"` 등록, 모듈 전역 lazy 캐시 + JSON 강제 프롬프트 + 코드 펜스 제거 파서 + 단일 generate. 첫 호출 ~161s 적재, 이후 ~8s/이미지.
+- **README VLM 환경 섹션 신설** — 최종 검증 환경(transformers 5.9.0 / torch 2.5.1+cu121 / torchvision 0.20.1+cu121 / hf_transfer 0.1.9 등) 으로 "서버 환경" 라인 교체.
+- **세션 영속화 자동화** — `requirements.txt` 에 cu121 torch wheel 핀 + ML stack 추가, `bootstrap.sh` 가 transformers `@v5.9.0` git pin 멱등 처리 + 모델 weight 부재 시 `snapshot_download` 까지 수행 → 매 세션 `bash bootstrap.sh` 한 줄로 전 환경 복원.
 
 ## 2026-05-25~26
 
-- Form Template 시스템 도입 — 신청서 종류별 추출 필드/few-shot 을 `server/backend/templates/<name>.yml` 에 정의하고 frontend Form Type 드롭다운에서 선택. `/analyze` 는 `field_spec` 대신 `template_name` 만 받고 backend 가 template 의 `field_spec`/`fewshot` 을 읽어 `_qwen_predict` 에 전달.
-- `templates_io.py` 신규 — 매 요청마다 `templates/` 디렉토리 재스캔으로 yml 추가/수정 시 backend 재시작 불필요.
-- `schemas.py` 에 `FewshotPair` / `Template` 추가 + `AnalyzeRequest.field_spec` → `template_name` 교체.
-- `model_registry.py` 의 `predict` 시그니처에 `fewshot` 추가 — `_qwen_predict` 가 fewshot user/assistant 페어를 image 메시지 앞에 삽입(verify_qwen 의 `messages[1~4]` 구조), `_qwen_build_prompt` 는 그대로 유지.
-- frontend `api.js` 에 `listTemplates` 추가, `App.jsx` 의 `DEFAULT_FIELD_SPEC` 하드코딩 제거 후 토올바에 Form Type 셀렉트 추가, `analyze` body 가 `template_name` 만 전송.
-- `templates/default.yml` 작성(기본 5필드, `fewshot: []`) + `README.md` 에 "신청서 종류 추가 (Form Template)" 섹션 신설 + `SCHEMA.md` 의 `Template`/`FewshotPair`/`POST /analyze` 갱신.
-- `requirements.txt` 에 `PyYAML 6.0.2` 추가.
-- Toolbar grid 재정의 — Form Type 추가로 자식이 5개가 되어 기존 `1fr 1fr 1fr auto` 4 트랙과 불일치하던 것을 `1fr auto 1fr 1fr auto` 로 교체. Device 는 컨텐츠 폭(`auto`), Model/Form Type/Upload 가 `1fr` 균등 분할.
-- Device 박스 내부 좌우 여백 비대칭 수정 — 브라우저 기본 `input[type=radio]` 마진(Chrome `좌5/우3`)을 `0` 으로 reset + `.device { justify-content: center }`.
-- DB 조회용 CLI 보강 — JupyterHub 환경에 `sqlite3` binary 가 부재(`sqlite_analyzer` 만 존재)함을 확인, `requirements.txt` 에 `sqlite-utils==3.38` 추가 + `README.md` "상태 저장 위치" 섹션에 `python -m sqlite_utils ~/data/state.db ...` 예시 4종(테이블 목록 / 이미지 조회 / 필드 결과 / done 시트 CSV) 신설. backend `db.py` 의 `import sqlite3` 는 Python 표준 라이브러리라 동작 영향 없음.
-- `TODO.md` 재편 — Form Template 채택으로 해결된 "현재 결정 사항" 섹션 삭제 후 "검증 대상" / "개선 대상" / "추후 개선 대상" 3-tier 로 재구성. "개선 대상" 에 DB 조회 GUI, 이미지 소스 전환(서버 사전 저장 + `server/data/<신청서종류>/` 분류), 작업 선택 UX(진행도/미완료/재수정), 로그인 + `worker` 컬럼, DB 컬럼 확장, 다중 페이지(PDF 8장) 신청서 단일 Image Summary 산출 등을 한 줄씩 추가.
+- **Form Template 시스템 도입** — `server/backend/templates/<name>.yml` 에 신청서별 추출 필드 / few-shot 정의, frontend Form Type 드롭다운에서 선택, `/analyze` 가 `template_name` 만 받고 backend 가 template 의 `field_spec`/`fewshot` 을 expand. `templates_io.py` 가 매 요청 디스크 재스캔 → backend 재시작 없이 추가/수정 가능.
+- **schemas / 어댑터 / frontend Form Type 연동** — `schemas.py` 에 `Template`/`FewshotPair` 추가, `AnalyzeRequest.field_spec` → `template_name` 교체, `_qwen_predict` 가 fewshot user/assistant 페어를 image 메시지 앞에 삽입 (verify_qwen 의 messages[1~4] 구조 일치), frontend `api.js` 에 `listTemplates` 추가, `App.jsx` 의 `DEFAULT_FIELD_SPEC` 하드코딩 제거.
+- **`templates/default.yml` 작성** — 기본 5필드, `fewshot: []`.
+- **PyYAML / sqlite-utils 추가** — `requirements.txt` 에 `PyYAML 6.0.2` (template 로더) + `sqlite-utils 3.38` (JupyterHub `sqlite3` binary 부재 대응 DB 조회 CLI).
+- **Toolbar 5트랙 재정의** — Form Type 추가로 자식이 5개가 되어 `1fr auto 1fr 1fr auto` 로 교체 (Device 컨텐츠 폭, 나머지 3종 균등 분할).
+- **Device 박스 좌우 여백 대칭** — Chrome 기본 `input[type=radio]` 마진(좌5/우3) 을 `0` reset + `justify-content: center`.
+- **TODO.md 3-tier 재편** — Form Template 채택으로 해결된 "현재 결정 사항" 삭제, "검증 대상 / 개선 대상 / 추후 개선 대상" 3-tier 로 재구성.
+- **다중 페이지 신청서 도입** — 작업 단위를 image 에서 application 으로 일괄 전환: 1 application = 1장(이미지) 또는 N장(PDF 분할), `_qwen_predict` 가 페이지 N장을 한 번의 `generate` 로 종합해 단일 ApplicationSummary 산출.
+    - **schemas.py** — `ImageInfo`/`ImageSummary` → `ApplicationInfo`/`ApplicationSummary` (+ `page_count`), `AnalyzeRequest.image_ids` → `application_ids`, `SheetRow.image_id` → `application_id`, `Job.images` → `Job.applications`. `ImageStatus` enum 이름은 그대로 둔다.
+    - **db.py** — `applications`/`application_pages`/`job_applications`/`field_results(PK: job+app+key)` 새 스키마 (기존 `images`/`job_images` 폐기 → `server/data/state.db` 와 `uploads/` 수동 삭제 후 신규 기동).
+    - **main.py** — `/upload` 가 PDF 를 `_split_pdf_to_pngs(scale=2.0)` 로 분할 후 원본 폐기, 신규 `GET /applications/{aid}/pages/{ord}/file`, `/analyze` 가 `application_ids` 수신, `_run_job` 이 application 단위로 모든 페이지를 한 번에 `predict(model, pages, ...)`, Stop 시 비-done application 결과 폐기.
+    - **model_registry.py** — `predict(image_paths: list[Path], ...)` 시그니처, `_qwen_predict` 가 messages user content 에 `{"type":"image"}` N개 + 텍스트 1개로 multi-image 입력, N>1 프롬프트에 "N장 종합 + 같은 항목 다중 페이지면 가장 명확한 값" 규칙 추가.
+    - **requirements.txt** — `pypdfium2==4.30.0` 추가 (pure wheel + 내장 PDFium, poppler/시스템 바이너리 불요 → 폐쇄망 적합).
+    - **frontend** — `api.js` 엔드포인트 전부 application 기반 + `pageUrl(aid, ord)` 추가, PDF embed 제거(서버 분할 결과 이미지로 통일), `App.jsx` `selectedApp`/`selectedPage` 도입, `ApplicationList` page_count>1 일 때 `Np` 칩, `ImageView` 에 페이지 prev/next 네비, Summary/Sheet 키 `application_id`, `styles.css` 에 `.pages`/`.page-nav` 추가 + 미사용 `.pdf-embed` 제거.
+    - **문서 일괄 갱신** — SCHEMA / PLAN §7 / TODO / README 가 application 단위로 갱신, PLAN §7 에 "이미지 N장 그룹핑 UX(Upload 1회 = 신청서 1건)" 향후 작업 명시.
+- **문서 4종 (README/PLAN/TODO/LOG) 정리** — README 를 기능별 사용법 + 필요 패키지 + 주의사항 챕터로 재편, PLAN 을 local(frontend) / server(backend/data/model) / JupyterHub 운영 / 다중 페이지 / 개선점 순으로 재정렬(코드/트리/UI 박스 등 ``` 블록은 보존), TODO/LOG 를 챕터 + 굵은 문제점 + 한 문장 설명 포맷으로 통일.
+- **문서 4종 정보 최신화** — PLAN §2 트리에 실재 파일(`templates_io.py` / `templates/default.yml` / `verify_qwen.py`) 추가, README "신청서 종류 추가" 의 `type: text` 주석을 "현재 Qwen 어댑터 미참조 (mock 만 사용), 자리만 유지" 로 정정 (`default.yml` 사용자 코멘트로 발견 + 코드 grep 으로 확인), TODO/LOG 는 미해결 항목 그대로 유효해 변경 없음.
