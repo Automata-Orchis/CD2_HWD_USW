@@ -255,16 +255,20 @@ async def _run_job(
             _set_application_status(application_id, ImageStatus.working)
             # per-application try/except — 한 신청서의 실패가 이후 신청서를 막지 않게 한다.
             # 실패 시에도 빈 FieldResult 를 저장해 ApplicationSummary 가 빈 표로 렌더된다.
+            # 추론 성공/실패는 status(analyzed/error)로 구분 표기해 사용자가 "미분석"·
+            # "분석완료"·"추론오류"를 List 에서 구별할 수 있게 한다.
             try:
                 info = _load_source(application_id)
                 if info is None:
                     _save_results(job_id, application_id, _empty_results())
+                    _set_application_status(application_id, ImageStatus.error)
                     continue
                 source, page_count = info
                 with tempfile.TemporaryDirectory() as tmp:
                     pages = _materialize_pages(source, page_count, Path(tmp))
                     if not pages:
                         _save_results(job_id, application_id, _empty_results())
+                        _set_application_status(application_id, ImageStatus.error)
                         continue
                     results: list[FieldResult] = await loop.run_in_executor(
                         None, model_registry.predict, model, pages, field_spec, fewshot_dicts
@@ -272,12 +276,14 @@ async def _run_job(
             except Exception as exc:
                 print(f"[predict failed] job={job_id} app={application_id}: {exc!r}", flush=True)
                 _save_results(job_id, application_id, _empty_results())
+                _set_application_status(application_id, ImageStatus.error)
                 continue
             if _stop_flags.get(job_id):
                 _set_application_status(application_id, ImageStatus.blank)
                 break
             _save_results(job_id, application_id, results)
-            # working 상태 유지 — 사용자가 Complete 누르면 done 으로 전환.
+            # 추론 완료 — 결과 저장됨. 사용자가 Complete 누르면 done 으로 전환.
+            _set_application_status(application_id, ImageStatus.analyzed)
         with db.connect() as cx:
             stopped = bool(_stop_flags.get(job_id))
             final = JobStatus.stopped.value if stopped else JobStatus.completed.value

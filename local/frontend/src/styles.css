@@ -14,16 +14,22 @@ h3 { margin: 0 0 8px; font-size: 14px; color: #555; }
 .toolbar .cap { padding-left: 10px; }
 .toolbar select { height: 32px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px; background: #fff; box-sizing: border-box; }
 .model-row { display: flex; gap: 4px; align-items: center; }
-.model-row select { min-width: 130px; max-width: 200px; }
-/* Load 버튼 — 상태별 배경색으로 적재 진행을 표시한다. loading 라벨에는 % 가 함께 들어간다. */
+/* 고정폭 — auto 트랙의 가변 여유로 Load 버튼과 Device 사이 간격이 벌어지지 않게 한다. */
+.model-row select { width: 150px; }
+/* Load 버튼 — 상태별 배경색으로 적재 진행을 표시한다. loading 라벨("로딩 중 100%")까지
+   담기는 고정폭으로 두어 라벨이 바뀌어도 뒤 칸(Device)이 밀리지 않는다. */
 .load-model { height: 32px; padding: 0 12px; font-size: 12px; font-weight: 500;
               border: 1px solid #ccd; border-radius: 4px; background: #eef1f5; color: #234;
-              cursor: pointer; white-space: nowrap; min-width: 100px; }
+              cursor: pointer; white-space: nowrap; width: 108px; }
 .load-model:hover:not(:disabled) { background: #dde4ee; }
 .load-model.loading { background: #fff3cd; border-color: #f0d56b; color: #6b5a18; cursor: progress; }
 .load-model.loaded  { background: #d4edda; border-color: #9bd5a8; color: #1a5028; opacity: 1; }
 .load-model.failed  { background: #f8d7da; border-color: #e6a4aa; color: #842029; }
-.select-work { height: 32px; padding: 0 14px; background: #eef1f5; color: #234; border: 1px solid #ccd; font-weight: 500; }
+/* 고정폭 + ellipsis — 선택된 카테고리 라벨 길이와 무관하게 폭이 일정해 뒤의 Analysis
+   버튼 위치가 고정된다. 잘린 전체 라벨은 button title 속성으로 hover 시 노출. */
+.select-work { width: 200px; height: 32px; padding: 0 14px; background: #eef1f5; color: #234;
+               border: 1px solid #ccd; font-weight: 500; text-align: left;
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .select-work:hover:not(:disabled) { background: #dde4ee; }
 .device { border: 1px solid #ccc; border-radius: 4px; height: 32px; padding: 0 8px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; background: #fff; }
 .device label { display: inline-flex; flex-direction: row; align-items: center; gap: 4px; font-size: 14px; color: #222; }
@@ -58,9 +64,11 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .image-list .fn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 .image-list .pages { font-size: 10px; padding: 2px 6px; border-radius: 10px; background: #eef1f5; color: #557; margin-right: 4px; }
 .badge { font-size: 10px; padding: 2px 6px; border-radius: 10px; text-transform: uppercase; }
-.badge.blank   { background: #eee; color: #777; }
-.badge.working { background: #fe9; color: #875; }
-.badge.done    { background: #ade; color: #246; }
+.badge.blank    { background: #eee; color: #777; }
+.badge.working  { background: #fe9; color: #875; }
+.badge.analyzed { background: #cfe9d4; color: #1a5028; }
+.badge.error    { background: #f8d7da; color: #842029; }
+.badge.done     { background: #ade; color: #246; }
 
 .image-view .zoom-stage { position: relative; width: 100%; height: 360px; overflow: hidden; display: flex; align-items: center; justify-content: center; user-select: none; }
 .image-view .zoom-stage.zoomed { cursor: grab; }

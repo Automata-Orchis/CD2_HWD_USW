@@ -9,9 +9,16 @@ class Device(str, Enum):
 
 
 # 한 신청서(application) 의 작업 상태. 코드 호환을 위해 이름은 ImageStatus 그대로 둔다.
+#   blank    : 미분석 (분석 큐에 들어가기 전)
+#   working  : 현재 분석(추론) 진행 중
+#   analyzed : 추론 완료 — 결과가 저장됨. 사용자 검토·Complete 대기.
+#   error    : 추론 실패 (predict 예외 / 소스 누락). 빈 결과만 저장됨.
+#   done     : 사용자가 Complete 처리 완료.
 class ImageStatus(str, Enum):
     blank = "blank"
     working = "working"
+    analyzed = "analyzed"
+    error = "error"
     done = "done"
 
 

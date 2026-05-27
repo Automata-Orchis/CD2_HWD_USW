@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api.js'
 
+// 신청서 상태 → List 배지 라벨. 분석이 안 된 것(대기) / 진행 중 / 분석완료 / 추론오류 /
+// 완료(Complete) 를 한눈에 구분하기 위함.
+const STATUS_LABEL = {
+  blank: '대기',
+  working: '분석중',
+  analyzed: '분석완료',
+  error: '오류',
+  done: '완료',
+}
+
 export default function App() {
   const [models, setModels] = useState([])
   const [devices, setDevices] = useState([])
@@ -126,12 +136,15 @@ export default function App() {
     return Object.fromEntries(job.applications.map((a) => [a.application_id, a.status]))
   }, [job])
 
-  // 한 번이라도 done 으로 들어간 적이 있는 application_id 는 새 job 의 statusMap 에 없어도
-  // done 으로 유지한다 (accumulatedRows 는 시트 누적과 동일한 done 집합을 이미 갖고 있다).
-  const appsForList = useMemo(() => loadedApps.map((u) => ({
-    ...u,
-    status: (statusMap[u.application_id] === 'done' || accumulatedRows[u.application_id]) ? 'done' : 'working',
-  })), [loadedApps, statusMap, accumulatedRows])
+  // 우선순위: 시트에 누적된(= 한 번이라도 Complete 된) 신청서는 done 으로 유지한다
+  // (accumulatedRows 는 시트 누적과 동일한 done 집합). 그 외엔 현재 job 의 실시간 status
+  // (blank/working/analyzed/error/done) 를 그대로 노출하고, 현재 job 에 없는 신청서는 목록
+  // 조회 시점의 status 를 쓴다. 이로써 List 에서 미분석/분석중/분석완료/오류/완료가 구별된다.
+  const appsForList = useMemo(() => loadedApps.map((u) => {
+    const live = statusMap[u.application_id]
+    const status = accumulatedRows[u.application_id] ? 'done' : (live ?? u.status)
+    return { ...u, status }
+  }), [loadedApps, statusMap, accumulatedRows])
 
   const fieldSpec = job?.field_spec ?? []
   const sheetRows = useMemo(() => Object.values(accumulatedRows), [accumulatedRows])
@@ -277,7 +290,8 @@ export default function App() {
 
         <div className="select-work-field">
           <span className="cap">Work</span>
-          <button className="select-work" onClick={handleToggleDashboard} disabled={isRunning}>
+          <button className="select-work" onClick={handleToggleDashboard} disabled={isRunning}
+                  title={templateLabel || templateName || '작업 선택'}>
             {templateLabel || templateName || '작업 선택'}
           </button>
         </div>
@@ -347,7 +361,7 @@ function ApplicationList({ apps, selected, onSelect }) {
               onClick={() => onSelect(a.application_id)}>
             <span className="fn">{a.filename}</span>
             {a.page_count > 1 && <span className="pages">{a.page_count}p</span>}
-            <span className={`badge ${a.status}`}>{a.status}</span>
+            <span className={`badge ${a.status}`}>{STATUS_LABEL[a.status] ?? a.status}</span>
           </li>
         ))}
         {!apps.length && <li className="empty">— 신청서 없음 —</li>}

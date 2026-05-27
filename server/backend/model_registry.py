@@ -19,12 +19,9 @@ from typing import Callable
 
 from schemas import FieldResult, FieldSpec
 
-# Qwen3.5-9B 의 적재 소요 시간 추정(실측 ~161s). 게이지 % 산출용 — 실제 호출 완료가 신호이며
-# 이 값은 어디까지나 frontend 시각 표현용 추정값이다.
-_QWEN_LOAD_EST_SEC = 180.0
-
 # 모델별 적재 상태. predict() 호출자가 lazy 로드를 트리거하기 전에 사용자가 명시적으로
 # start_loading() 을 부르면 백그라운드 스레드에서 미리 적재한다.
+# progress 는 시간 추정이 아니라 실제 VRAM 적재량(_qwen_mem_monitor)으로 채운다.
 _load_state: dict[str, dict] = {}
 # RLock — start_loading 이 락을 쥔 상태에서 _snapshot() 을 호출하는 재귀 진입을 허용한다.
 _load_lock = threading.RLock()
@@ -75,6 +72,47 @@ _qwen_model = None
 _qwen_load_mutex = threading.Lock()
 
 
+def _qwen_total_bytes() -> int | None:
+    """게이지 분모 — 가중치 총 바이트. safetensors index 의 metadata.total_size 우선,
+    없으면 *.safetensors 파일 크기 합. 구하지 못하면 None (모니터 비활성)."""
+    try:
+        idx = _QWEN_MODEL_DIR / "model.safetensors.index.json"
+        if idx.exists():
+            meta = json.loads(idx.read_text(encoding="utf-8"))
+            size = int(meta.get("metadata", {}).get("total_size", 0))
+            if size > 0:
+                return size
+        files = list(_QWEN_MODEL_DIR.glob("*.safetensors"))
+        if files:
+            return sum(f.stat().st_size for f in files)
+    except Exception:
+        pass
+    return None
+
+
+def _qwen_mem_monitor(total: int, stop_evt: threading.Event) -> None:
+    """적재 중 0.4s 마다 실제 VRAM 점유를 읽어 progress 를 실측으로 갱신한다.
+
+    progress = clamp(memory_allocated / total, 0, 0.99). 0.99 상한 — 완료 신호는
+    _qwen_get 가 1.0 으로 덮는다. max() 로 단조 증가 보장(일시적 free 에 뒷걸음 X).
+    시간이 아니라 실제 적재 바이트를 반영하므로, 로딩이 빠르면 빠르게/느리면 느리게,
+    멈춰 있으면 게이지도 멈춘다.
+    """
+    import torch
+
+    while not stop_evt.wait(0.4):
+        try:
+            alloc = torch.cuda.memory_allocated()
+        except Exception:
+            return
+        frac = min(0.99, alloc / total) if total else 0.0
+        with _load_lock:
+            st = _load_state.get("Qwen3.5-9B")
+            if not st or st["state"] != "loading":
+                return
+            st["progress"] = max(st.get("progress", 0.0), frac)
+
+
 def _qwen_get():
     """가중치 lazy load. 이미 적재됐으면 즉시 반환.
 
@@ -98,18 +136,41 @@ def _qwen_get():
             import torch
             from transformers import AutoModelForImageTextToText, AutoProcessor
 
-            # local_files_only=True — 폐쇄망/불안정 네트워크에서 HF Hub 메타 조회로
-            # from_pretrained 가 다운로드 재시도 루프에 빠지는 것을 차단.
-            _qwen_processor = AutoProcessor.from_pretrained(
-                str(_QWEN_MODEL_DIR), local_files_only=True
-            )
-            _qwen_model = AutoModelForImageTextToText.from_pretrained(
-                str(_QWEN_MODEL_DIR),
-                dtype=torch.bfloat16,
-                device_map="auto",
-                local_files_only=True,
-            )
-            _qwen_model.eval()
+            # 실측 진행률 모니터 — from_pretrained 가 device_map="auto" 로 가중치를 GPU 에
+            # 올리는 동안 torch.cuda.memory_allocated() 가 단조 증가한다. 이를 가중치 총
+            # 바이트로 나눠 실제 적재율을 게이지에 반영한다. GPU 가 없으면 모니터를 띄우지
+            # 않고 progress 는 완료 시 1.0 으로만 채워진다.
+            stop_evt = threading.Event()
+            monitor: threading.Thread | None = None
+            total = _qwen_total_bytes()
+            if total and torch.cuda.is_available():
+                monitor = threading.Thread(
+                    target=_qwen_mem_monitor, args=(total, stop_evt), daemon=True
+                )
+                monitor.start()
+
+            # 두 경로(Load 버튼 vs Analyze 자동 로드)의 실제 적재 wall-time 을 로그로 남겨
+            # "작업 선택 후 로딩이 느리다" 를 추정이 아닌 실측으로 비교할 수 있게 한다.
+            t0 = time.time()
+            print("[qwen load] start", flush=True)
+            try:
+                # local_files_only=True — 폐쇄망/불안정 네트워크에서 HF Hub 메타 조회로
+                # from_pretrained 가 다운로드 재시도 루프에 빠지는 것을 차단.
+                _qwen_processor = AutoProcessor.from_pretrained(
+                    str(_QWEN_MODEL_DIR), local_files_only=True
+                )
+                _qwen_model = AutoModelForImageTextToText.from_pretrained(
+                    str(_QWEN_MODEL_DIR),
+                    dtype=torch.bfloat16,
+                    device_map="auto",
+                    local_files_only=True,
+                )
+                _qwen_model.eval()
+            finally:
+                stop_evt.set()
+                if monitor is not None:
+                    monitor.join(timeout=1.0)
+            print(f"[qwen load] done in {time.time() - t0:.1f}s", flush=True)
             with _load_lock:
                 _load_state["Qwen3.5-9B"].update({"state": "loaded", "progress": 1.0})
         except Exception as e:
@@ -156,13 +217,10 @@ def get_load_status(model_name: str) -> dict:
 
 
 def _snapshot(model_name: str) -> dict:
-    """현재 상태의 얕은 복사 + loading 중이면 경과시간 기반 progress 추정."""
+    """현재 상태의 얕은 복사. progress 는 _qwen_mem_monitor 가 실측 VRAM 으로 채운 값이며
+    여기서 시간 기반 추정을 더하지 않는다 (실제 적재량과의 괴리 제거)."""
     with _load_lock:
         s = dict(_load_state[model_name])
-    if s["state"] == "loading" and s.get("started_at"):
-        elapsed = time.time() - s["started_at"]
-        # 1.0 미만으로 클램프 — 실제 적재 완료 시 worker 가 1.0 으로 갱신한다.
-        s["progress"] = max(s.get("progress", 0.0), min(0.95, elapsed / _QWEN_LOAD_EST_SEC))
     return {"state": s["state"], "progress": s["progress"], "error": s.get("error")}
 
 

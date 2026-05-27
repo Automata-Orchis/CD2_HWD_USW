@@ -21,8 +21,10 @@
 | 이름 | 값 |
 |---|---|
 | `Device` | `"cpu"`, `"gpu"` |
-| `ImageStatus` | `"blank"`, `"working"`, `"done"` |
+| `ImageStatus` | `"blank"`, `"working"`, `"analyzed"`, `"error"`, `"done"` |
 | `JobStatus` | `"running"`, `"stopped"`, `"completed"` |
+
+**`ImageStatus` 의미** : `blank` 미분석 · `working` 추론 진행 중 · `analyzed` 추론 완료(결과 저장, 검토·Complete 대기) · `error` 추론 실패(predict 예외/소스 누락, 빈 결과만 저장) · `done` 사용자 Complete 완료. frontend List 배지가 이 다섯 상태를 색·라벨로 구분한다 (대기/분석중/분석완료/오류/완료).
 
 ## 2. 기본 타입
 
@@ -143,7 +145,7 @@
 | `GET` | `/devices` | `{"devices": ["cpu", "gpu"]}` |
 | `GET` | `/templates` | `{"templates": [ /* Template, ... */ ]}` |
 
-**모델 적재 상태(`state`)** : `unloaded` / `loading` / `loaded` / `failed`. frontend "모델 로드" 버튼이 `POST /models/{name}/load` 를 호출하면 backend 가 백그라운드 스레드로 가중치를 적재한다. 첫 추론을 lazy 로드로 기다리는 ~161s 의 UX 지연을 피하기 위함. `loading` 중에는 `progress` 가 시간 기반 추정값(실측 적재 ~180s 기준 클램프 0.95)으로 채워지고, 적재 완료 시 worker 가 1.0 으로 갱신. `Mock-Model` 처럼 적재 비용이 없는 모델은 항상 `loaded`. Analyze 시점에 모델이 미적재면 frontend 가 동일한 `POST /models/{name}/load` 를 자동 호출해 같은 적재 경로(`_qwen_load_mutex` 로 단일 적재 보장)에 진입하므로, Load 버튼은 선제 적재의 단축 UX 일 뿐 누르지 않아도 분석은 가능하다.
+**모델 적재 상태(`state`)** : `unloaded` / `loading` / `loaded` / `failed`. frontend "모델 로드" 버튼이 `POST /models/{name}/load` 를 호출하면 backend 가 백그라운드 스레드로 가중치를 적재한다. 첫 추론을 lazy 로드로 기다리는 ~161s 의 UX 지연을 피하기 위함. `loading` 중 `progress` 는 **시간 추정이 아니라 실제 VRAM 적재량**으로 채운다 — `_qwen_mem_monitor` 가 0.4s 마다 `torch.cuda.memory_allocated()` 를 가중치 총 바이트(`model.safetensors.index.json` 의 `metadata.total_size`)로 나눠 0.99 상한·단조 증가로 갱신하고, 적재 완료 시 worker 가 1.0 으로 덮는다. GPU 가 없으면 모니터를 띄우지 않고 완료 시 1.0 으로만 채워진다. `Mock-Model` 처럼 적재 비용이 없는 모델은 항상 `loaded`. Analyze 시점에 모델이 미적재면 frontend 가 동일한 `POST /models/{name}/load` 를 자동 호출해 같은 적재 경로(`_qwen_load_mutex` 로 단일 적재 보장)에 진입하므로, Load 버튼은 선제 적재의 단축 UX 일 뿐 누르지 않아도 분석은 가능하다.
 
 ### 3.2 카테고리(작업) 조회
 
