@@ -27,10 +27,28 @@ _load_state: dict[str, dict] = {}
 _load_lock = threading.RLock()
 
 
+# ---------- Qwen 어댑터 (9B / 4B 공용) ----------
+# 같은 Qwen3_5ForConditionalGeneration 아키텍처라 한 어댑터가 name 으로 분기해 둘 다 처리.
+# 9B: bf16 ~18 GiB / 4B: bf16 ~8 GiB. 4B 는 GPU 경합으로 9B 적재 불가 시 폴백 용도.
+
+_QWEN_NAMES: tuple[str, ...] = ("Qwen3.5-9B", "Qwen3.5-4B")
+_QWEN_MODEL_DIRS: dict[str, Path] = {n: Path.home() / "model" / n for n in _QWEN_NAMES}
+# 모델별 lazy 캐시 (processor / model). dict 이므로 두 모델 동시 보유 가능 — 단,
+# GPU 메모리는 둘 다 적재 시 부족하므로 보통 한 번에 한 모델만 사용한다.
+_qwen_processors: dict[str, object] = {}
+_qwen_models: dict[str, object] = {}
+# 모델별 적재 mutex — 동시에 두 진입자(예: Load 버튼 worker + Analyze 의 lazy load) 가
+# _qwen_get 에 들어와도 실제 적재는 단 한 번만 수행되도록 보호. RLock 인 _load_lock 과
+# 분리한 이유 — 적재 161s 동안 _load_lock 점유 시 _snapshot()/get_load_status 가 막혀
+# frontend 진행률 폴링이 멈춘다. 적재용 mutex 와 status 접근용 lock 을 분리한다.
+_qwen_load_mutexes: dict[str, threading.Lock] = {n: threading.Lock() for n in _QWEN_NAMES}
+
+
 def _init_load_state() -> None:
     # Mock-Model 은 적재 비용이 없으므로 항상 loaded 로 둔다.
     _load_state.setdefault("Mock-Model", {"state": "loaded", "progress": 1.0, "started_at": None, "error": None})
-    _load_state.setdefault("Qwen3.5-9B", {"state": "unloaded", "progress": 0.0, "started_at": None, "error": None})
+    for name in _QWEN_NAMES:
+        _load_state.setdefault(name, {"state": "unloaded", "progress": 0.0, "started_at": None, "error": None})
 
 
 def _mock_predict(
@@ -58,31 +76,18 @@ def _mock_predict(
     return out
 
 
-# ---------- Qwen3.5-9B ----------
-# 첫 호출에서 processor/model 을 1회 lazy 적재해 모듈 전역에 캐시.
-# 이후 같은 프로세스 안의 모든 호출은 generate 비용만 든다 (~8s/256토큰 @ 32 tok/s).
-
-_QWEN_MODEL_DIR = Path.home() / "model" / "Qwen3.5-9B"
-_qwen_processor = None
-_qwen_model = None
-# 동시에 두 진입자(예: Load 버튼 worker + Analyze 의 lazy load) 가 _qwen_get 에 들어와도
-# 실제 적재는 단 한 번만 수행되도록 보호하는 mutex. RLock 인 _load_lock 과 분리한 이유 —
-# 적재 161s 동안 _load_lock 을 점유하면 _snapshot()/get_load_status 가 막혀 frontend
-# 진행률 폴링이 멈춘다. 적재용 mutex 와 status 접근용 lock 을 분리한다.
-_qwen_load_mutex = threading.Lock()
-
-
-def _qwen_total_bytes() -> int | None:
+def _qwen_total_bytes(name: str) -> int | None:
     """게이지 분모 — 가중치 총 바이트. safetensors index 의 metadata.total_size 우선,
     없으면 *.safetensors 파일 크기 합. 구하지 못하면 None (모니터 비활성)."""
+    model_dir = _QWEN_MODEL_DIRS[name]
     try:
-        idx = _QWEN_MODEL_DIR / "model.safetensors.index.json"
+        idx = model_dir / "model.safetensors.index.json"
         if idx.exists():
             meta = json.loads(idx.read_text(encoding="utf-8"))
             size = int(meta.get("metadata", {}).get("total_size", 0))
             if size > 0:
                 return size
-        files = list(_QWEN_MODEL_DIR.glob("*.safetensors"))
+        files = list(model_dir.glob("*.safetensors"))
         if files:
             return sum(f.stat().st_size for f in files)
     except Exception:
@@ -90,7 +95,7 @@ def _qwen_total_bytes() -> int | None:
     return None
 
 
-def _qwen_mem_monitor(total: int, stop_evt: threading.Event) -> None:
+def _qwen_mem_monitor(name: str, total: int, stop_evt: threading.Event) -> None:
     """적재 중 0.4s 마다 실제 VRAM 점유를 읽어 progress 를 실측으로 갱신한다.
 
     progress = clamp(memory_allocated / total, 0, 0.99). 0.99 상한 — 완료 신호는
@@ -107,29 +112,31 @@ def _qwen_mem_monitor(total: int, stop_evt: threading.Event) -> None:
             return
         frac = min(0.99, alloc / total) if total else 0.0
         with _load_lock:
-            st = _load_state.get("Qwen3.5-9B")
+            st = _load_state.get(name)
             if not st or st["state"] != "loading":
                 return
             st["progress"] = max(st.get("progress", 0.0), frac)
 
 
-def _qwen_get():
+def _qwen_get(name: str):
     """가중치 lazy load. 이미 적재됐으면 즉시 반환.
 
     explicit Load 버튼 흐름(`start_loading` → `_qwen_load_worker`)과 자동 lazy load
     흐름(`predict` → `_qwen_predict`) 둘 다 이 함수를 거친다. mutex 로 단일 적재 보장 +
     _load_state 갱신을 함수 안에 일원화해 두 흐름 모두 frontend 진행률을 본다.
+
+    `name` 은 _QWEN_NAMES 중 하나 (예: "Qwen3.5-9B" / "Qwen3.5-4B"). 두 모델 가중치
+    캐시는 모듈 전역 dict 에 분리되어 동시 보유 가능 (실 운영에선 보통 한 번에 한 모델).
     """
-    global _qwen_processor, _qwen_model
-    if _qwen_model is not None:
-        return _qwen_processor, _qwen_model
+    if name in _qwen_models:
+        return _qwen_processors[name], _qwen_models[name]
     _init_load_state()
-    with _qwen_load_mutex:
+    with _qwen_load_mutexes[name]:
         # double-check — 대기 중에 다른 호출자가 적재를 완료했을 수 있다.
-        if _qwen_model is not None:
-            return _qwen_processor, _qwen_model
+        if name in _qwen_models:
+            return _qwen_processors[name], _qwen_models[name]
         with _load_lock:
-            _load_state["Qwen3.5-9B"].update({
+            _load_state[name].update({
                 "state": "loading", "progress": 0.0, "started_at": time.time(), "error": None,
             })
         try:
@@ -142,50 +149,51 @@ def _qwen_get():
             # 않고 progress 는 완료 시 1.0 으로만 채워진다.
             stop_evt = threading.Event()
             monitor: threading.Thread | None = None
-            total = _qwen_total_bytes()
+            total = _qwen_total_bytes(name)
             if total and torch.cuda.is_available():
                 monitor = threading.Thread(
-                    target=_qwen_mem_monitor, args=(total, stop_evt), daemon=True
+                    target=_qwen_mem_monitor, args=(name, total, stop_evt), daemon=True
                 )
                 monitor.start()
 
             # 두 경로(Load 버튼 vs Analyze 자동 로드)의 실제 적재 wall-time 을 로그로 남겨
             # "작업 선택 후 로딩이 느리다" 를 추정이 아닌 실측으로 비교할 수 있게 한다.
             t0 = time.time()
-            print("[qwen load] start", flush=True)
+            print(f"[qwen load] {name} start", flush=True)
             try:
+                model_dir = _QWEN_MODEL_DIRS[name]
                 # local_files_only=True — 폐쇄망/불안정 네트워크에서 HF Hub 메타 조회로
                 # from_pretrained 가 다운로드 재시도 루프에 빠지는 것을 차단.
-                _qwen_processor = AutoProcessor.from_pretrained(
-                    str(_QWEN_MODEL_DIR), local_files_only=True
+                _qwen_processors[name] = AutoProcessor.from_pretrained(
+                    str(model_dir), local_files_only=True
                 )
-                _qwen_model = AutoModelForImageTextToText.from_pretrained(
-                    str(_QWEN_MODEL_DIR),
+                _qwen_models[name] = AutoModelForImageTextToText.from_pretrained(
+                    str(model_dir),
                     dtype=torch.bfloat16,
                     device_map="auto",
                     local_files_only=True,
                 )
-                _qwen_model.eval()
+                _qwen_models[name].eval()
             finally:
                 stop_evt.set()
                 if monitor is not None:
                     monitor.join(timeout=1.0)
-            print(f"[qwen load] done in {time.time() - t0:.1f}s", flush=True)
+            print(f"[qwen load] {name} done in {time.time() - t0:.1f}s", flush=True)
             with _load_lock:
-                _load_state["Qwen3.5-9B"].update({"state": "loaded", "progress": 1.0})
+                _load_state[name].update({"state": "loaded", "progress": 1.0})
         except Exception as e:
             with _load_lock:
-                _load_state["Qwen3.5-9B"].update({"state": "failed", "error": repr(e)})
+                _load_state[name].update({"state": "failed", "error": repr(e)})
             raise
-    return _qwen_processor, _qwen_model
+    return _qwen_processors[name], _qwen_models[name]
 
 
 # ---------- 모델 적재 제어 (frontend "모델 로드" 버튼 + 게이지) ----------
 
-def _qwen_load_worker() -> None:
+def _qwen_load_worker(name: str) -> None:
     """백그라운드 스레드 — Qwen 적재 트리거. state 전환은 `_qwen_get` 안에서 처리."""
     try:
-        _qwen_get()
+        _qwen_get(name)
     except Exception:
         # _qwen_get 안의 except 가 이미 state=failed 로 마킹했다. 여기선 추가 처리 없음.
         pass
@@ -200,9 +208,9 @@ def start_loading(model_name: str) -> dict:
         state = _load_state[model_name]
         if state["state"] in ("loading", "loaded"):
             return _snapshot(model_name)
-        if model_name == "Qwen3.5-9B":
+        if model_name in _QWEN_NAMES:
             state.update({"state": "loading", "progress": 0.0, "started_at": time.time(), "error": None})
-            threading.Thread(target=_qwen_load_worker, daemon=True).start()
+            threading.Thread(target=_qwen_load_worker, args=(model_name,), daemon=True).start()
         else:
             # Mock 등 적재 비용 없는 모델 — 즉시 loaded.
             state.update({"state": "loaded", "progress": 1.0, "started_at": None, "error": None})
@@ -242,6 +250,11 @@ def _qwen_build_prompt(field_spec: list[FieldSpec], n_pages: int) -> str:
         "2. 키는 위 영문 그대로 사용.",
         '3. 값을 읽을 수 없으면 빈 문자열 "".',
         "4. 같은 항목이 여러 페이지에 나타나면 가장 명확히 적힌 값을 사용한다.",
+        # 5번 규칙 — direct_payment_v2 의 ④-2(분리세대) 같이 한쪽 열이 비어 있는 표에서,
+        # 모델이 빈 칸을 건너뛰고 사람 단위로 압축해 위치 인덱스를 깨던 현상을 막는다.
+        # 키 이름의 _N 인덱스나 (행, 좌/우) 표시는 폼의 물리적 위치를 의미하므로 그 자리에서만 읽는다.
+        "5. 키 이름에 위치(_1, _2, ... 또는 행/좌·우 등)가 명시된 경우, 그 위치의 칸에서만 값을 읽어라.",
+        '   해당 칸이 비어 있으면 빈 문자열 "" 을 채우고, 다른 칸의 값을 그 자리로 옮기지 말 것.',
     ]
     return "\n".join(lines)
 
@@ -278,6 +291,7 @@ def _qwen_parse(text: str, field_spec: list[FieldSpec]) -> dict[str, str | None]
 
 
 def _qwen_predict(
+    name: str,
     image_paths: list[Path],
     field_spec: list[FieldSpec],
     fewshot: list[dict],
@@ -288,7 +302,7 @@ def _qwen_predict(
     if not image_paths:
         return [FieldResult(key=s.key, predicted=None, accuracy=None, edited=None) for s in field_spec]
 
-    processor, model = _qwen_get()
+    processor, model = _qwen_get(name)
     images = [Image.open(p).convert("RGB") for p in image_paths]
 
     # fewshot 은 이미지 없는 텍스트 user/assistant 페어. 실제 분석 대상 이미지 메시지 앞에
@@ -309,7 +323,10 @@ def _qwen_predict(
     )
     inputs = processor(text=[text], images=images, return_tensors="pt", padding=True).to(model.device)
     with torch.inference_mode():
-        out = model.generate(**inputs, max_new_tokens=1024, do_sample=False)
+        # 1024→2048 : direct_payment_v2(44필드, 행별 키) JSON 출력이 1024 안에 닫히지
+        # 않아 _qwen_parse 가 빈 dict 로 폴백하는 것을 방지. greedy decoding 이라 정상
+        # 신청서는 EOS 에서 자동 종료되어 추가 비용 없음.
+        out = model.generate(**inputs, max_new_tokens=2048, do_sample=False)
     new_tokens = out[:, inputs.input_ids.shape[1] :]
     output_text = processor.batch_decode(new_tokens, skip_special_tokens=True)[0]
     parsed = _qwen_parse(output_text, field_spec)
@@ -319,9 +336,16 @@ def _qwen_predict(
     ]
 
 
+def _make_qwen_predict(name: str) -> Callable[[list[Path], list[FieldSpec], list[dict]], list[FieldResult]]:
+    """name 을 closure 로 잡아 표준 시그니처의 어댑터 함수를 만든다 (_REGISTRY 호환용)."""
+    def _impl(image_paths: list[Path], field_spec: list[FieldSpec], fewshot: list[dict]) -> list[FieldResult]:
+        return _qwen_predict(name, image_paths, field_spec, fewshot)
+    return _impl
+
+
 _REGISTRY: dict[str, Callable[[list[Path], list[FieldSpec], list[dict]], list[FieldResult]]] = {
     "Mock-Model": _mock_predict,
-    "Qwen3.5-9B": _qwen_predict,
+    **{n: _make_qwen_predict(n) for n in _QWEN_NAMES},
 }
 
 

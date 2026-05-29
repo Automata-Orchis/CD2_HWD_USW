@@ -86,10 +86,33 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .summary td input { width: 100%; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px; }
 .summary .acc { width: 50px; text-align: right; color: #888; font-variant-numeric: tabular-nums; }
 
+/* 영역 그룹 — direct_payment.yml 의 49 필드를 ①/④-1/④-2/⑥-1/⑥-2 로 묶고, 세대원·
+   분리세대는 한 인물=한 행 의 3 컬럼 표로 압축해 세로 길이를 줄인다 (49 → ~29 행). */
+.summary .field-group { margin-bottom: 10px; }
+.summary .field-group h4 { margin: 8px 0 4px; padding-left: 8px; font-size: 12px;
+                           font-weight: 600; color: #357; border-left: 3px solid #357; }
+.summary .field-group table { margin-bottom: 0; }
+
+/* 세대원/분리세대 표 — 위치 / 관계 / 성명 / 주민등록번호 4 컬럼. */
+.summary .person-table th { width: auto; padding: 2px 4px; font-size: 11px;
+                            color: #777; border-bottom: 1px solid #eee; }
+.summary .person-table th.pos { width: 56px; }
+.summary .person-table td { padding: 2px 4px; }
+.summary .person-table td.pos { color: #888; font-size: 11px; }
+.summary .person-table td input { padding: 2px 4px; font-size: 12px; }
+.summary .person-table td input:disabled { background: #f5f5f5; }
+
 .preview { margin-top: 12px; background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 12px; }
 /* 행이 6개 이하일 때는 자연스럽게 펼쳐지고, 7번째부터 세로 스크롤이 발생한다.
    행 높이 ≈ padding 4+4 + line-height 18 + border 1 = 27px → thead 1 + tbody 6 = 189px. */
 .sheet-scroll { max-height: 189px; overflow-y: auto; overflow-x: auto; }
-.sheet { width: 100%; border-collapse: collapse; font-size: 12px; }
-.sheet th, .sheet td { border: 1px solid #e0e0e0; padding: 4px 8px; text-align: left; line-height: 18px; }
+/* width:auto + min-width:100% — yml 키가 늘어(49) 한 셀이 ~25px 까지 압축되어 글자가
+   잘려보이던 회귀를 해결. 이제 표는 내용 폭만큼 가로로 늘어나고, 부모 폭을 넘으면 가로
+   스크롤이 작동한다. white-space:nowrap 으로 라벨/값이 줄바꿈되지 않게 유지. */
+.sheet { width: auto; min-width: 100%; border-collapse: collapse; font-size: 12px; }
+.sheet th, .sheet td { border: 1px solid #e0e0e0; padding: 4px 8px; text-align: left;
+                       line-height: 18px; white-space: nowrap; }
 .sheet thead th { background: #f7f8fa; position: sticky; top: 0; z-index: 1; }
+/* application_id 컬럼은 좌측 sticky — 가로 스크롤 중에도 어느 행을 보고 있는지 식별 가능. */
+.sheet th:first-child, .sheet td:first-child { position: sticky; left: 0; background: #fff; z-index: 2; }
+.sheet thead th:first-child { background: #f7f8fa; z-index: 3; }

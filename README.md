@@ -14,7 +14,7 @@ VLM 기반 한글 손글씨 문서 인식 시연 시스템.
 - **DB CLI** : sqlite-utils 3.38.
 - **git tag 핀** : `transformers @ git+...@v5.9.0` — `qwen3_5` model_type 보유 + FSDP2 hard import 회귀 없는 stable tag. `bootstrap.sh` 가 멱등 처리.
 - **바이너리** : `cloudflared-linux-amd64` — 홈 영속, 1회 다운로드.
-- **모델 weight** : Qwen3.5-9B (~18 GiB) — `hf_transfer` 가속, 홈 영속.
+- **모델 weight** : Qwen3.5-9B (~18 GiB, default) + Qwen3.5-4B (~8 GiB, GPU 경합 폴백) — `hf_transfer` 가속, 홈 영속.
 
 ### Frontend — 수동 설치
 
@@ -33,7 +33,9 @@ CD2_HWD_USW/
     │   ├── <template_name>/    # 카테고리 폴더 (= templates/<name>.yml 파일 stem)
     │   │   └── *.pdf | *.png   # 신청서 파일 1개 = application 1건
     │   └── original_data/      # 작업 탐색에서 제외되는 reserved 폴더 (원본 양식 등)
-    └── model/Qwen3.5-9B/       # VLM 파라미터 (실 weight 는 서버에만 존재)
+    └── model/                  # VLM 파라미터 (실 weight 는 서버에만 존재)
+        ├── Qwen3.5-9B/         #   default (bf16 ~18 GiB)
+        └── Qwen3.5-4B/         #   GPU 경합 폴백 (bf16 ~8 GiB)
 ```
 
 ## 구동 — 서버 (JupyterHub 터미널)
@@ -125,13 +127,26 @@ fewshot:
 - `:` 뒤에는 공백 1칸. 리스트 항목은 `-` (대시 + 공백) 시작.
 - 값에 콜론/따옴표 포함 시 큰따옴표로 감싸기 (`label: "Account No. (Bank Name)"`).
 
-## 검증 스크립트 — verify_qwen.py
+## 검증 스크립트 — verify_qwen.py, verify_crop.py
 
-Qwen3.5-9B 가 GPU 에서 실제로 멀티모달 추론을 수행하는지 단독 확인. 어댑터 수정 전 4단계 분리 검증 (processor / bf16 적재 / chat template / generate).
+### verify_qwen.py — Qwen 모델 단독 추론 검증
+
+Qwen3.5-9B / Qwen3.5-4B 가 GPU 에서 실제로 멀티모달 추론을 수행하는지 단독 확인. 어댑터 수정 전 4단계 분리 검증 (processor / bf16 적재 / chat template / generate).
 
 ```bash
 cd ~/backend
 python verify_qwen.py <image_path> [prompt]
+```
+
+### verify_crop.py — 다중 PDF × FULL 검증 CSV 출력
+
+사전 적재된 PDF 들을 FULL 페이지로 분석해 결과를 CSV (UTF-8 BOM, wide: 행=키, 열=PDF) 로 누적. 사용자가 정답을 `answer` 컬럼에 채워 대조하기 위한 도구. CROP 비교는 2026-05-29 폐기 (맥락 손실로 OCR 정확도 ROI 음수, TODO 참조).
+
+```bash
+cd ~/backend
+python verify_crop.py [pdf_or_dir] [template_name] [model_name] [out_csv]
+# 인자 전부 생략 시 기본 — ~/data/direct_payment/*.pdf, direct_payment, Qwen3.5-9B, ./verify_results.csv
+# 4B 폴백 (GPU 경합 시) : python verify_crop.py "" direct_payment Qwen3.5-4B
 ```
 
 ## DB 조회

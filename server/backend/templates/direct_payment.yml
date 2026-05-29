@@ -1,54 +1,92 @@
-# name: template의 식별자이다. 즉, template 별로 고유해야 한다. 
-#       추가적으로 파일명과 name이 동일할 필요는 없다. 
-#       단, 고유성을 유지하고 혼란을 줄이기 위해 파일명과 동일하게 하는 것을 추천한다. 
-# field_spec
-#           type: 사실상 아무런 곳에도 활용되지 않는다. 
+# 기본직접지불금 지급대상자 등록신청서(농업인용) 의 신청서 분석 template.
+# 다행 표 필드(세대원/분리세대/신청인)는 행별 키로 분리해 평탄화 문제(한 변수명 1 : 값 1
+# 대응이 깨져 한 명분만 잡힘) 를 해결한다. 라벨에 위치 텍스트(N행 좌/우 또는 N행 M열) 가
+# 박혀 있고, `model_registry._qwen_build_prompt` 의 규칙 5 가 "위치 명시된 키는 그 자리
+# 에서만 읽고 다른 자리로 옮기지 말 것" 을 강제한다.
+#
+# 영역 / 모델링
+# ① 등록신청인               : 1세트 (5 필드).
+# ④-1 주민등록표상 세대원    : 4행 × 2명/행 = 8명 (좌·우 컬럼, 각 인물당 관계/성명/주민번호).
+# ④-2 주민등록표상 세대분리  : 2행 × 2명/행 = 4명 (같은 구조). 손글씨 PDF 패턴상 우측 칸의
+#                              관계·성명이 비고 주민번호만 적힐 수 있어, 라벨에 "1열~6열" 로
+#                              컬럼 위치를 명시해 모델이 빈 셀을 자기 자리 그대로 비워두도록
+#                              유도 (모델의 인물 단위 압축 본능 완화).
+# ⑥-1 기본직접지불금 신청    : 신청면적은 농지 단위 4행 (application_area_1..4), 그 외
+#                              지급요건 (신청·경영 면적의 합 / 소유면적의 합 / 영농종사 년수
+#                              / 농촌거주 년수) 은 한 농가당 1세트 단일 키.
+# ⑥-2 등록신청인 성명        : 4행 (한 농가 안의 여러 등록신청인 명단).
+# 인덱스는 폼의 읽기 순서(1행 좌→우, 2행 좌→우, ...)와 일치.
 
-name: direct_payment 
+name: direct_payment
 label: 기본직접지불금_지급대상자_등록신청서(농업인용)
 
 field_spec:
-  - key: full_name
-    label: 성명(등록신청인)
-    type: text
-  - key: rrn
-    label: 주민등록번호(등록신청인)
-    type: text
-  - key: account
-    label: 계좌번호(은행명)(등록신청인)
-    type: text
-  - key: address
-    label: 주소(등록신청인)
-    type: text
-  - key: phone_number
-    label: 전화번호(등록신청인)
-    type: text
-  - key: relationship(rrc)
-    label: 관계(주민등록표상 세대원)
-    type: text
-  - key: full_name(rrc)
-    label: 성명(주민등록표상 세대원)
-    type: text
-  - key: rrn(rrc)
-    label: 주민등록번호(주민등록표상 세대원)
-    type: text
-  - key: relationship(non-rrc)
-    label: 관계(주민등록표상 세대를 분리한 가족 구성원)
-    type: text
-  - key: full_name(non-rrc)
-    label: 성명(주민등록표상 세대를 분리한 가족 구성원)
-    type: text
-  - key: rrn(non-rrc)
-    label: 주민등록번호(주민등록표상 세대를 분리한 가족 구성원)
-    type: text
-  - key: application_area
-    label: 신청면적(m²)(기본직접지불금 신청)
-    type: text
-  - key: total_application_area
-    label: 신청·소유면적 등-신청(경영) 면적의 합(기본직접지불금 신청)
-    type: text
-  - key: name_of_the_applicant_for_registration
-    label: 등록신청인 성명(기본직접지불금 신청)
-    type: text
+  # ① 등록신청인 (1세트)
+  - {key: full_name,    label: 성명(등록신청인),               type: text}
+  - {key: rrn,          label: 주민등록번호(등록신청인),       type: text}
+  - {key: account,      label: 계좌번호(은행명)(등록신청인),   type: text}
+  - {key: address,      label: 주소(등록신청인),               type: text}
+  - {key: phone_number, label: 전화번호(등록신청인),           type: text}
+
+  # ④-1 주민등록표상 세대원 (4행 × 좌/우)
+  - {key: relationship_rrc_1, label: "관계(세대원, 1행 좌)",         type: text}
+  - {key: full_name_rrc_1,    label: "성명(세대원, 1행 좌)",         type: text}
+  - {key: rrn_rrc_1,          label: "주민등록번호(세대원, 1행 좌)", type: text}
+  - {key: relationship_rrc_2, label: "관계(세대원, 1행 우)",         type: text}
+  - {key: full_name_rrc_2,    label: "성명(세대원, 1행 우)",         type: text}
+  - {key: rrn_rrc_2,          label: "주민등록번호(세대원, 1행 우)", type: text}
+  - {key: relationship_rrc_3, label: "관계(세대원, 2행 좌)",         type: text}
+  - {key: full_name_rrc_3,    label: "성명(세대원, 2행 좌)",         type: text}
+  - {key: rrn_rrc_3,          label: "주민등록번호(세대원, 2행 좌)", type: text}
+  - {key: relationship_rrc_4, label: "관계(세대원, 2행 우)",         type: text}
+  - {key: full_name_rrc_4,    label: "성명(세대원, 2행 우)",         type: text}
+  - {key: rrn_rrc_4,          label: "주민등록번호(세대원, 2행 우)", type: text}
+  - {key: relationship_rrc_5, label: "관계(세대원, 3행 좌)",         type: text}
+  - {key: full_name_rrc_5,    label: "성명(세대원, 3행 좌)",         type: text}
+  - {key: rrn_rrc_5,          label: "주민등록번호(세대원, 3행 좌)", type: text}
+  - {key: relationship_rrc_6, label: "관계(세대원, 3행 우)",         type: text}
+  - {key: full_name_rrc_6,    label: "성명(세대원, 3행 우)",         type: text}
+  - {key: rrn_rrc_6,          label: "주민등록번호(세대원, 3행 우)", type: text}
+  - {key: relationship_rrc_7, label: "관계(세대원, 4행 좌)",         type: text}
+  - {key: full_name_rrc_7,    label: "성명(세대원, 4행 좌)",         type: text}
+  - {key: rrn_rrc_7,          label: "주민등록번호(세대원, 4행 좌)", type: text}
+  - {key: relationship_rrc_8, label: "관계(세대원, 4행 우)",         type: text}
+  - {key: full_name_rrc_8,    label: "성명(세대원, 4행 우)",         type: text}
+  - {key: rrn_rrc_8,          label: "주민등록번호(세대원, 4행 우)", type: text}
+
+  # ④-2 주민등록표상 세대분리 가족 (2행 × 좌/우)
+  # — 라벨에 "1열~6열" 로 컬럼 위치 명시. 일부 PDF 에서 우측 칸의 관계·성명은 비어 있고
+  #   주민번호만 적혀 있는 패턴이 관찰됨 — 모델이 빈 셀을 건너뛰고 인물 단위로 인덱스를
+  #   압축하는 본능을 약화시키기 위함.
+  - {key: relationship_non_rrc_1, label: "관계 (④-2 분리세대, 1행 1열)",         type: text}
+  - {key: full_name_non_rrc_1,    label: "성명 (④-2 분리세대, 1행 2열)",         type: text}
+  - {key: rrn_non_rrc_1,          label: "주민등록번호 (④-2 분리세대, 1행 3열)", type: text}
+  - {key: relationship_non_rrc_2, label: "관계 (④-2 분리세대, 1행 4열)",         type: text}
+  - {key: full_name_non_rrc_2,    label: "성명 (④-2 분리세대, 1행 5열)",         type: text}
+  - {key: rrn_non_rrc_2,          label: "주민등록번호 (④-2 분리세대, 1행 6열)", type: text}
+  - {key: relationship_non_rrc_3, label: "관계 (④-2 분리세대, 2행 1열)",         type: text}
+  - {key: full_name_non_rrc_3,    label: "성명 (④-2 분리세대, 2행 2열)",         type: text}
+  - {key: rrn_non_rrc_3,          label: "주민등록번호 (④-2 분리세대, 2행 3열)", type: text}
+  - {key: relationship_non_rrc_4, label: "관계 (④-2 분리세대, 2행 4열)",         type: text}
+  - {key: full_name_non_rrc_4,    label: "성명 (④-2 분리세대, 2행 5열)",         type: text}
+  - {key: rrn_non_rrc_4,          label: "주민등록번호 (④-2 분리세대, 2행 6열)", type: text}
+
+  # ⑥-1 기본직접지불금 신청 — ⑤-3 신청면적은 농지 단위 4행, 그 외 지급요건 (신청·경영
+  # 면적의 합 / 소유면적의 합 / 영농종사 년수 / 농촌거주 년수) 은 한 농가당 1세트 단일 키.
+  # 체크박스만 있는 3·3-1·4번 지급요건은 추출 대상이 아니다.
+  - {key: application_area_1, label: "신청면적(m²) (⑥-1 신청표, 1행)",  type: text}
+  - {key: application_area_2, label: "신청면적(m²) (⑥-1 신청표, 2행)",  type: text}
+  - {key: application_area_3, label: "신청면적(m²) (⑥-1 신청표, 3행)",  type: text}
+  - {key: application_area_4, label: "신청면적(m²) (⑥-1 신청표, 4행)",  type: text}
+  - {key: total_application_area, label: "신청(경영) 면적의 합 (⑥-1 신청표, 1행 중 1행 지급요건)",  type: text}
+  - {key: total_owned_area,       label: "소유면적의 합 (⑥-1 신청표, 1행 중 2행 지급요건)",        type: text}
+  - {key: farming_years,          label: "영농종사 년수 (⑥-1 신청표, 2번 지급요건 윗줄)",     type: text}
+  - {key: residence_years,        label: "농촌거주 년수 (⑥-1 신청표, 2번 지급요건 아랫줄)",   type: text}
+
+  # ⑥-2 등록신청인 성명 — 4행 (한 농가 안의 여러 등록신청인 명단).
+  - {key: name_of_the_applicant_for_registration_1, label: "등록신청인 성명 (⑥-2 신청인 표, 1행)", type: text}
+  - {key: name_of_the_applicant_for_registration_2, label: "등록신청인 성명 (⑥-2 신청인 표, 2행)", type: text}
+  - {key: name_of_the_applicant_for_registration_3, label: "등록신청인 성명 (⑥-2 신청인 표, 3행)", type: text}
+  - {key: name_of_the_applicant_for_registration_4, label: "등록신청인 성명 (⑥-2 신청인 표, 4행)", type: text}
 
 fewshot: []

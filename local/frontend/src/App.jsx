@@ -160,10 +160,18 @@ export default function App() {
   const handleLoadModel = async () => {
     if (!model) return
     setError('')
+    // 낙관적 업데이트 — 클릭 즉시 라벨이 '로딩 중 0%' 로 바뀌어 시각 피드백을 준다.
+    // backend 응답 (즉시 반환 — `start_loading` 이 백그라운드 스레드만 띄움) 을 기다리는
+    // 동안 UI 가 멈춰 보이지 않게. 응답 오면 그 값으로 덮어쓰고, 실패하면 error 표시 +
+    // unloaded 로 복원해 사용자가 재시도 가능하게.
+    setModelStatus({ state: 'loading', progress: 0 })
     try {
       const s = await api.loadModel(model)
       setModelStatus(s)
-    } catch (e) { setError(e.message) }
+    } catch (e) {
+      setError(`모델 로드 실패 — ${e.message} (backend URL: ${api.base})`)
+      setModelStatus({ state: 'unloaded', progress: 0 })
+    }
   }
 
   const loadButtonLabel = () => {
@@ -516,11 +524,17 @@ function ApplicationSummary({ summary, fieldSpec, onCommitFields, onComplete }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summary?.application_id, summary?.fields.length])
 
+  // 영역별 그룹화 — `direct_payment.yml` 의 키 prefix 로 자동 분류 후, 세대원·분리세대는
+  // 한 인물 = 한 행 (관계/성명/주민번호) 의 3-컬럼 표로 압축해 세로 길이를 줄인다.
+  const groups = useMemo(() => groupFieldSpec(fieldSpec), [fieldSpec])
+
   if (!summary) {
     return <div className="panel summary"><h3>Application Summary</h3><div className="empty">분석 결과 없음</div></div>
   }
 
   const byKey = Object.fromEntries(summary.fields.map((f) => [f.key, f]))
+  // input 핸들러를 키마다 새로 만들지 않고 한 번만 — 같은 패턴.
+  const onChange = (key) => (e) => setDrafts((d) => ({ ...d, [key]: e.target.value }))
 
   const handleComplete = async () => {
     const fields = fieldSpec.map((spec) => {
@@ -539,29 +553,130 @@ function ApplicationSummary({ summary, fieldSpec, onCommitFields, onComplete }) 
   return (
     <div className="panel summary">
       <h3>Application Summary</h3>
-      <table>
-        <tbody>
-          {fieldSpec.map((spec) => {
-            const f = byKey[spec.key]
-            return (
-              <tr key={spec.key}>
-                <th>{spec.label}</th>
-                <td>
-                  <input
-                    value={drafts[spec.key] ?? ''}
-                    onChange={(e) => setDrafts((d) => ({ ...d, [spec.key]: e.target.value }))}
-                  />
-                </td>
-                <td className="acc">{f?.accuracy != null ? `${(f.accuracy * 100).toFixed(0)}%` : '—'}</td>
-              </tr>
-            )
-          })}
-          {!fieldSpec.length && <tr><td className="empty" colSpan={3}>대기 중…</td></tr>}
-        </tbody>
-      </table>
+      {groups.applicant.length > 0 && (
+        <section className="field-group">
+          <h4>① 등록신청인</h4>
+          <FieldList specs={groups.applicant} drafts={drafts} onChange={onChange} byKey={byKey} />
+        </section>
+      )}
+      {groups.rrc.length > 0 && (
+        <section className="field-group">
+          <h4>④-1 주민등록표상 세대원</h4>
+          <PersonTable specs={groups.rrc} drafts={drafts} onChange={onChange} />
+        </section>
+      )}
+      {groups.non_rrc.length > 0 && (
+        <section className="field-group">
+          <h4>④-2 분리세대</h4>
+          <PersonTable specs={groups.non_rrc} drafts={drafts} onChange={onChange} />
+        </section>
+      )}
+      {groups.apply_other.length > 0 && (
+        <section className="field-group">
+          <h4>⑥-1 기본직접지불금 신청</h4>
+          <FieldList specs={groups.apply_other} drafts={drafts} onChange={onChange} byKey={byKey} />
+        </section>
+      )}
+      {groups.apply_names.length > 0 && (
+        <section className="field-group">
+          <h4>⑥-2 등록신청인 성명</h4>
+          <FieldList specs={groups.apply_names} drafts={drafts} onChange={onChange} byKey={byKey} />
+        </section>
+      )}
+      {!fieldSpec.length && <div className="empty">대기 중…</div>}
       <button onClick={handleComplete} disabled={summary.status === 'done'}>Complete</button>
     </div>
   )
+}
+
+// 영역별 단순 세로 목록 — label / input / accuracy.
+function FieldList({ specs, drafts, onChange, byKey }) {
+  return (
+    <table className="field-list">
+      <tbody>
+        {specs.map((spec) => {
+          const f = byKey[spec.key]
+          return (
+            <tr key={spec.key}>
+              <th>{spec.label}</th>
+              <td><input value={drafts[spec.key] ?? ''} onChange={onChange(spec.key)} /></td>
+              <td className="acc">{f?.accuracy != null ? `${(f.accuracy * 100).toFixed(0)}%` : '—'}</td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
+  )
+}
+
+// 세대원/분리세대 — 인덱스(_1.._N) 별로 한 행씩, 관계·성명·주민번호 3 컬럼.
+// direct_payment.yml 의 인덱스는 1좌, 1우, 2좌, 2우 순이므로 그 매핑을 그대로 라벨로 노출.
+function PersonTable({ specs, drafts, onChange }) {
+  const rows = useMemo(() => groupByIndex(specs), [specs])
+  return (
+    <table className="person-table">
+      <thead>
+        <tr>
+          <th className="pos">위치</th>
+          <th>관계</th>
+          <th>성명</th>
+          <th>주민등록번호</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => (
+          <tr key={row.idx}>
+            <td className="pos">{positionLabel(row.idx)}</td>
+            <td><input value={drafts[row.relationship?.key] ?? ''}
+                       onChange={row.relationship ? onChange(row.relationship.key) : undefined}
+                       disabled={!row.relationship} /></td>
+            <td><input value={drafts[row.full_name?.key] ?? ''}
+                       onChange={row.full_name ? onChange(row.full_name.key) : undefined}
+                       disabled={!row.full_name} /></td>
+            <td><input value={drafts[row.rrn?.key] ?? ''}
+                       onChange={row.rrn ? onChange(row.rrn.key) : undefined}
+                       disabled={!row.rrn} /></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+// ---------- Summary 그룹화 헬퍼 ----------
+
+const APPLICANT_KEYS = new Set(['full_name', 'rrn', 'account', 'address', 'phone_number'])
+
+function groupFieldSpec(specs) {
+  const out = { applicant: [], rrc: [], non_rrc: [], apply_other: [], apply_names: [] }
+  for (const s of specs) {
+    if (APPLICANT_KEYS.has(s.key)) out.applicant.push(s)
+    else if (s.key.includes('_non_rrc_')) out.non_rrc.push(s)
+    else if (s.key.includes('_rrc_')) out.rrc.push(s)
+    else if (s.key.startsWith('name_of_the_applicant')) out.apply_names.push(s)
+    else out.apply_other.push(s)  // application_area_*, total_application_area, total_owned_area, farming_years, residence_years
+  }
+  return out
+}
+
+function groupByIndex(specs) {
+  const rows = {}
+  for (const s of specs) {
+    const m = s.key.match(/_(\d+)$/)
+    if (!m) continue
+    const idx = parseInt(m[1], 10)
+    if (!rows[idx]) rows[idx] = { idx }
+    if (s.key.startsWith('relationship_')) rows[idx].relationship = s
+    else if (s.key.startsWith('full_name_')) rows[idx].full_name = s
+    else if (s.key.startsWith('rrn_')) rows[idx].rrn = s
+  }
+  return Object.values(rows).sort((a, b) => a.idx - b.idx)
+}
+
+function positionLabel(idx) {
+  const row = Math.ceil(idx / 2)
+  const col = idx % 2 === 1 ? '좌' : '우'
+  return `${row}행 ${col}`
 }
 
 function CategoryBox({ cat, onClick }) {

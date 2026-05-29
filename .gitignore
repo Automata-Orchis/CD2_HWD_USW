@@ -1,8 +1,23 @@
-# 
+#
 server/data/test
 server/data/original_data
 server/data/direct_payment
+server/.check_crop
+server/data/state.db
+
+.vscode
+
+presentation/
 *.pptx
+
+CLAUDE.md
+LOG.md
+PLAN.md
+SCHEMA.md
+TODO.md
+
+# 검증용 스크래치 산출물(렌더 PNG, 실험 스크립트 등) — 작업 폴더 내에 두되 커밋 제외
+/scratch/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
